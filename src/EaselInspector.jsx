@@ -1,5 +1,5 @@
 import { AssetRecordType, createShapeId, useEditor, useValue } from 'tldraw'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 const RATIOS = [
   { id: '1:1', value: 1 },
@@ -18,7 +18,7 @@ function displaySize(width, height) {
   return { w: Math.round((DISPLAY_LONG_SIDE * width) / height), h: DISPLAY_LONG_SIDE }
 }
 
-function insertImageCard(editor, result, centerX, centerY, meta) {
+function createImageAsset(editor, result) {
   const assetId = AssetRecordType.createId()
   editor.createAssets([
     {
@@ -37,6 +37,11 @@ function insertImageCard(editor, result, centerX, centerY, meta) {
       meta: {}
     }
   ])
+  return assetId
+}
+
+function insertImageCard(editor, result, centerX, centerY, meta) {
+  const assetId = createImageAsset(editor, result)
   const { w, h } = displaySize(result.width, result.height)
   const id = createShapeId()
   editor.createShape({
@@ -48,7 +53,59 @@ function insertImageCard(editor, result, centerX, centerY, meta) {
     meta: { easelImage: true, createdAt: Date.now(), ...meta }
   })
   editor.select(id)
-  return { id, w, h }
+  return id
+}
+
+function replaceImageInPlace(editor, shape, result, meta) {
+  const assetId = createImageAsset(editor, result)
+  const { w, h } = displaySize(result.width, result.height)
+  editor.updateShape({
+    id: shape.id,
+    type: 'image',
+    props: { ...shape.props, assetId, w, h },
+    meta: { ...shape.meta, ...meta, replacedAt: Date.now() }
+  })
+  editor.select(shape.id)
+}
+
+// Best-effort lineage arrow from source -> result (unbound; a visual hint).
+function drawLineageArrow(editor, fromId, toId) {
+  try {
+    const a = editor.getShapePageBounds(fromId)
+    const b = editor.getShapePageBounds(toId)
+    if (!a || !b) return
+    editor.createShape({
+      id: createShapeId(),
+      type: 'arrow',
+      x: 0,
+      y: 0,
+      props: {
+        start: { x: a.maxX, y: a.midY },
+        end: { x: b.minX, y: b.midY },
+        color: 'grey',
+        size: 's',
+        dash: 'dotted',
+        arrowheadStart: 'none',
+        arrowheadEnd: 'arrow'
+      },
+      meta: { easelLineage: true }
+    })
+  } catch {
+    /* lineage arrow is best-effort */
+  }
+}
+
+function downloadAsset(editor, shape) {
+  const asset = shape?.props?.assetId ? editor.getAsset(shape.props.assetId) : null
+  const src = asset?.props?.src
+  if (!src) return false
+  const link = document.createElement('a')
+  link.href = src
+  link.download = asset.props.name || 'easel-image.png'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  return true
 }
 
 export function EaselInspector() {
@@ -61,12 +118,23 @@ export function EaselInspector() {
   })()
 
   const [prompt, setPrompt] = useState('')
-  const [editPrompt, setEditPrompt] = useState('')
   const [ratio, setRatio] = useState('1:1')
+  const [selPrompt, setSelPrompt] = useState('')
+  const [editPrompt, setEditPrompt] = useState('')
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
 
+  // Prefill the selected image's prompt when selection changes.
+  useEffect(() => {
+    if (selectedImage) {
+      setSelPrompt(typeof selectedImage.meta?.prompt === 'string' ? selectedImage.meta.prompt : '')
+      setEditPrompt('')
+    }
+  }, [selectedImage?.id])
+
   const ratioValue = () => (RATIOS.find((r) => r.id === ratio) ?? RATIOS[0]).value
+  const pageId = () => editor.getCurrentPageId()
+  const center = () => editor.getViewportPageBounds().center
 
   async function callApi(path, payload) {
     const res = await fetch(path, {
@@ -79,20 +147,12 @@ export function EaselInspector() {
     return data
   }
 
-  async function handleGenerate() {
-    const text = prompt.trim()
-    if (!text || busy) return
+  async function run(label, fn) {
+    if (busy) return
     setBusy(true)
-    setStatus('生成中…')
+    setStatus(label)
     try {
-      const data = await callApi('/api/generate', {
-        prompt: text,
-        pageId: editor.getCurrentPageId(),
-        ratio: ratioValue()
-      })
-      const c = editor.getViewportPageBounds().center
-      insertImageCard(editor, data, c.x, c.y, { prompt: text, kind: 'generate' })
-      setStatus(`已生成 ${data.size}`)
+      await fn()
     } catch (error) {
       setStatus(`失败：${error.message}`)
     } finally {
@@ -100,66 +160,95 @@ export function EaselInspector() {
     }
   }
 
-  async function handleVariants(count = 4) {
+  function handleGenerate() {
     const text = prompt.trim()
-    if (!text || busy) return
-    setBusy(true)
-    try {
-      const c = editor.getViewportPageBounds().center
+    if (!text) return
+    run('生成中…', async () => {
+      const data = await callApi('/api/generate', { prompt: text, pageId: pageId(), ratio: ratioValue() })
+      const c = center()
+      insertImageCard(editor, data, c.x, c.y, { prompt: text, kind: 'generate' })
+      setStatus(`已生成 ${data.size}`)
+    })
+  }
+
+  function handleVariants(count = 4) {
+    const text = prompt.trim()
+    if (!text) return
+    run('生成变体…', async () => {
+      const c = center()
+      const groupId = `vg-${Date.now()}`
       for (let i = 0; i < count; i += 1) {
         setStatus(`变体 ${i + 1}/${count}…`)
-        const data = await callApi('/api/generate', {
-          prompt: text,
-          pageId: editor.getCurrentPageId(),
-          ratio: ratioValue()
-        })
+        const data = await callApi('/api/generate', { prompt: text, pageId: pageId(), ratio: ratioValue() })
         const col = i % 2
         const row = Math.floor(i / 2)
         insertImageCard(editor, data, c.x + (col - 0.5) * 420, c.y + (row - 0.5) * 420, {
           prompt: text,
-          kind: 'variant'
+          kind: 'variant',
+          variantGroupId: groupId
         })
       }
       setStatus(`已生成 ${count} 个变体`)
-    } catch (error) {
-      setStatus(`失败：${error.message}`)
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
-  async function handleEdit() {
+  function handleRegenerate() {
+    const text = selPrompt.trim()
+    if (!selectedImage || !text) return
+    run('重新生成并替换…', async () => {
+      const ratioOfSel = selectedImage.props?.h ? selectedImage.props.w / selectedImage.props.h : 1
+      const data = await callApi('/api/generate', { prompt: text, pageId: pageId(), ratio: ratioOfSel })
+      replaceImageInPlace(editor, selectedImage, data, { prompt: text, kind: 'regenerate' })
+      setStatus('已用新图替换选中图')
+    })
+  }
+
+  function handleVariantFromSelected() {
+    const text = selPrompt.trim()
+    if (!selectedImage || !text) return
+    run('生成变体…', async () => {
+      const ratioOfSel = selectedImage.props?.h ? selectedImage.props.w / selectedImage.props.h : 1
+      const data = await callApi('/api/generate', { prompt: text, pageId: pageId(), ratio: ratioOfSel })
+      const b = editor.getShapePageBounds(selectedImage.id)
+      const size = displaySize(data.width, data.height)
+      const cx = b ? b.maxX + 40 + size.w / 2 : center().x
+      const cy = b ? b.midY : center().y
+      const newId = insertImageCard(editor, data, cx, cy, { prompt: text, kind: 'variant', sourceShapeId: selectedImage.id })
+      drawLineageArrow(editor, selectedImage.id, newId)
+      setStatus('已在右侧生成变体')
+    })
+  }
+
+  function handleEdit() {
     const text = editPrompt.trim()
-    if (!selectedImage || !text || busy) return
+    if (!selectedImage || !text) return
     const asset = selectedImage.props?.assetId ? editor.getAsset(selectedImage.props.assetId) : null
     const src = asset?.props?.src
     if (!src) {
       setStatus('选中图没有可用的本地源')
       return
     }
-    setBusy(true)
-    setStatus('图生图编辑中…（可能 30~50s）')
-    try {
-      const data = await callApi('/api/edit', {
-        prompt: text,
-        pageId: editor.getCurrentPageId(),
-        sourceSrc: src
-      })
-      const bounds = editor.getShapePageBounds(selectedImage.id)
+    run('图生图编辑中…（约 30~50s）', async () => {
+      const data = await callApi('/api/edit', { prompt: text, pageId: pageId(), sourceSrc: src })
+      const b = editor.getShapePageBounds(selectedImage.id)
       const size = displaySize(data.width, data.height)
-      const centerX = bounds ? bounds.maxX + 40 + size.w / 2 : editor.getViewportPageBounds().center.x
-      const centerY = bounds ? bounds.midY : editor.getViewportPageBounds().center.y
-      insertImageCard(editor, data, centerX, centerY, {
-        prompt: text,
-        kind: 'edit',
-        sourceShapeId: selectedImage.id
-      })
+      const cx = b ? b.maxX + 40 + size.w / 2 : center().x
+      const cy = b ? b.midY : center().y
+      const newId = insertImageCard(editor, data, cx, cy, { prompt: text, kind: 'edit', sourceShapeId: selectedImage.id })
+      drawLineageArrow(editor, selectedImage.id, newId)
       setStatus('已生成编辑结果（放在原图右侧）')
-    } catch (error) {
-      setStatus(`失败：${error.message}`)
-    } finally {
-      setBusy(false)
-    }
+    })
+  }
+
+  function handleExport() {
+    if (!selectedImage) return
+    setStatus(downloadAsset(editor, selectedImage) ? '已导出 PNG' : '无可导出的源')
+  }
+
+  function handleDelete() {
+    if (!selectedImage) return
+    editor.deleteShapes([selectedImage.id])
+    setStatus('已删除选中图')
   }
 
   const stop = (event) => event.stopPropagation()
@@ -169,7 +258,7 @@ export function EaselInspector() {
       <div className="easel-inspector__title">Easel 图像工作站</div>
 
       <section className="easel-inspector__section">
-        <label className="easel-inspector__label">提示词</label>
+        <label className="easel-inspector__label">新建图片</label>
         <textarea
           className="easel-inspector__textarea"
           value={prompt}
@@ -200,13 +289,30 @@ export function EaselInspector() {
       </section>
 
       <section className="easel-inspector__section">
-        <label className="easel-inspector__label">图生图（选中一张图）</label>
+        <label className="easel-inspector__label">{selectedImage ? '选中图：迭代' : '选中一张图以迭代'}</label>
+        <textarea
+          className="easel-inspector__textarea"
+          value={selPrompt}
+          onChange={(e) => setSelPrompt(e.target.value)}
+          placeholder="选中图的提示词（可改后重生成 / 出变体）"
+          rows={3}
+          disabled={!selectedImage}
+        />
+        <div className="easel-inspector__actions">
+          <button type="button" className="easel-btn" disabled={busy || !selectedImage || !selPrompt.trim()} onClick={handleRegenerate}>
+            重生成(替换)
+          </button>
+          <button type="button" className="easel-btn" disabled={busy || !selectedImage || !selPrompt.trim()} onClick={handleVariantFromSelected}>
+            出变体
+          </button>
+        </div>
+
         <textarea
           className="easel-inspector__textarea"
           value={editPrompt}
           onChange={(e) => setEditPrompt(e.target.value)}
-          placeholder={selectedImage ? '只改哪里，其余尽量保留…' : '先在画布选中一张图'}
-          rows={3}
+          placeholder={selectedImage ? '图生图：只改哪里，其余保留…' : ''}
+          rows={2}
           disabled={!selectedImage}
         />
         <button
@@ -215,8 +321,17 @@ export function EaselInspector() {
           disabled={busy || !selectedImage || !editPrompt.trim()}
           onClick={handleEdit}
         >
-          按描述编辑选中图
+          按描述编辑(图生图)
         </button>
+
+        <div className="easel-inspector__actions">
+          <button type="button" className="easel-btn" disabled={!selectedImage} onClick={handleExport}>
+            导出 PNG
+          </button>
+          <button type="button" className="easel-btn" disabled={busy || !selectedImage} onClick={handleDelete}>
+            删除
+          </button>
+        </div>
       </section>
 
       <div className="easel-inspector__status">{busy ? '⏳ ' : ''}{status}</div>
