@@ -52,6 +52,20 @@ Workflow:
 - The region is taken from the selected rectangle automatically. You may instead pass an explicit `region: { x, y, w, h }` in **source-image pixels** (use the image asset's `w`/`h` from `get_easel_selection` to compute it).
 - The image is updated **in place** at the same size; everything outside the box is kept unchanged. The rectangle is removed afterward.
 
+## Annotation-driven editing (point and describe) — often the most natural
+
+Frequently the easiest way to edit: the user draws arrows / text / notes on the canvas pointing at parts of an image (e.g. an arrow labeled “短发” at the hair, “短T” at the shirt, “ipad” at the hands), then selects the image **together with** those annotations.
+
+`get_easel_selection` returns each shape's `text` and page `bounds`, so you can read what each annotation asks for and where it points. Then:
+
+- Read every annotation: the requested change, and which part of the image its bounds/arrow indicate.
+- Decide how to apply it:
+  - **Several stylistic / overlapping changes** (hair + clothing + add a held object): compose ONE combined instruction and call `edit_easel_image` (whole-image img2img). Explicitly keep the person's identity, pose, framing, and background; apply only the annotated changes.
+  - **One isolated, contained change** where the rest must stay pixel-identical: call `edit_easel_region` for the area that annotation points at.
+- After editing, say what you changed and offer to clear the annotation shapes or iterate.
+
+Annotations are ordinary tldraw arrow / text / note shapes — no special tool needed.
+
 ## Notes
 
 - Requires `EASEL_IMAGE_API_KEY` (or `OPENAI_API_KEY`) in the environment. If a tool reports no key, tell the user to set it locally and restart Codex.

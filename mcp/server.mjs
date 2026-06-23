@@ -258,29 +258,38 @@ function replaceImageInPlaceStore(store, shapeId, gen, meta) {
   return { assetId, shapeId };
 }
 
+// Page-space bounds of a selected shape (prefer reported bounds; fall back to x/y/props).
+function shapeBounds(s) {
+  if (s?.bounds && Number.isFinite(s.bounds.x) && Number.isFinite(s.bounds.w)) {
+    return { x: s.bounds.x, y: s.bounds.y, w: s.bounds.w, h: s.bounds.h };
+  }
+  const x = Number(s?.x), y = Number(s?.y), w = Number(s?.props?.w), h = Number(s?.props?.h);
+  if ([x, y, w, h].every(Number.isFinite)) return { x, y, w, h };
+  return null;
+}
+
 // Turn selected rectangle shape(s) into a region in the image's pixel space.
 function deriveRegionFromSelection(selection, imageSel) {
-  const geos = (selection?.selectedShapes ?? []).filter((s) => s.type === "geo" && s.props);
+  const geos = (selection?.selectedShapes ?? []).filter((s) => s.type === "geo");
   if (geos.length === 0) return null;
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const g of geos) {
-    const gx = Number(g.x), gy = Number(g.y), gw = Number(g.props.w), gh = Number(g.props.h);
-    if (![gx, gy, gw, gh].every(Number.isFinite)) continue;
-    minX = Math.min(minX, gx);
-    minY = Math.min(minY, gy);
-    maxX = Math.max(maxX, gx + gw);
-    maxY = Math.max(maxY, gy + gh);
+    const b = shapeBounds(g);
+    if (!b) continue;
+    minX = Math.min(minX, b.x);
+    minY = Math.min(minY, b.y);
+    maxX = Math.max(maxX, b.x + b.w);
+    maxY = Math.max(maxY, b.y + b.h);
   }
   if (!Number.isFinite(minX)) return null;
-  const ix = Number(imageSel.x), iy = Number(imageSel.y);
-  const iw = Number(imageSel.props?.w), ih = Number(imageSel.props?.h);
+  const ib = shapeBounds(imageSel);
   const aw = Number(imageSel.asset?.w), ah = Number(imageSel.asset?.h);
-  if (![ix, iy, iw, ih, aw, ah].every(Number.isFinite) || iw <= 0 || ih <= 0) return null;
+  if (!ib || ![aw, ah].every(Number.isFinite) || ib.w <= 0 || ib.h <= 0) return null;
   return {
-    x: ((minX - ix) / iw) * aw,
-    y: ((minY - iy) / ih) * ah,
-    w: ((maxX - minX) / iw) * aw,
-    h: ((maxY - minY) / ih) * ah,
+    x: ((minX - ib.x) / ib.w) * aw,
+    y: ((minY - ib.y) / ib.h) * ah,
+    w: ((maxX - minX) / ib.w) * aw,
+    h: ((maxY - minY) / ib.h) * ah,
   };
 }
 
@@ -420,7 +429,12 @@ async function handleToolCall(id, params) {
     const summary =
       shapes.length === 0
         ? "No Easel shapes are currently selected."
-        : shapes.map((s) => `${s.id} [${s.type ?? "unknown"}]${s.asset?.name ? ` (${s.asset.name})` : ""}`).join("\n");
+        : shapes
+            .map(
+              (s) =>
+                `${s.id} [${s.type ?? "unknown"}]${nonEmptyString(s.text) ? ` “${s.text}”` : ""}${s.asset?.name ? ` (${s.asset.name})` : ""}`
+            )
+            .join("\n");
     sendResult(id, { content: [{ type: "text", text: summary }], structuredContent: { selection } });
     return;
   }

@@ -41,17 +41,40 @@ function applyRemoteCanvasSnapshot(editor, snapshot, { preserveLocalChanges = fa
   return recordsToPut.length
 }
 
+// Collect plain text from a tldraw richText (TipTap) doc or a plain text prop,
+// so the agent can read annotation labels (notes, arrow/geo labels, text shapes).
+function richTextToPlain(node) {
+  if (!node || typeof node !== 'object') return ''
+  if (typeof node.text === 'string') return node.text
+  const content = Array.isArray(node.content) ? node.content : []
+  return content.map(richTextToPlain).join('')
+}
+
+function extractShapeText(shape) {
+  const p = shape?.props
+  if (!p) return ''
+  if (typeof p.text === 'string' && p.text.trim()) return p.text.trim()
+  if (p.richText) {
+    const plain = richTextToPlain(p.richText).trim()
+    if (plain) return plain
+  }
+  return ''
+}
+
 function getEaselSelection(editor) {
   const selectedShapeIds = editor.getSelectedShapeIds()
   return selectedShapeIds.map((id) => {
     const shape = editor.getShape(id)
     const asset = shape?.props?.assetId ? editor.getAsset(shape.props.assetId) : null
+    const bounds = editor.getShapePageBounds(id)
     return {
       id,
       type: shape?.type ?? null,
       parentId: shape?.parentId ?? null,
       x: shape?.x ?? null,
       y: shape?.y ?? null,
+      bounds: bounds ? { x: bounds.minX, y: bounds.minY, w: bounds.w, h: bounds.h } : null,
+      text: extractShapeText(shape),
       meta: shape?.meta ?? null,
       isEaselImage: shape?.meta?.easelImage === true,
       props: shape?.props ?? null,

@@ -94,7 +94,12 @@ http://127.0.0.1:43219/
 
 ## 5. 在 Codex 里对话驱动（推荐，这才用得上大模型）
 
-把 Easel 装进 Codex（personal marketplace 加一条指向 `./plugins/easel`），然后 `codex plugin add easel@personal`，开新对话。之后你只要说人话，Codex 会补全提示词再生成；要改局部就**画个框、连图一起选中**，跟它说「把框里改成…」，它会只重画框内。详见 [README.md](README.md)。
+把 Easel 装进 Codex（personal marketplace 加一条指向 `./plugins/easel`），然后 `codex plugin add easel@personal`，开新对话。之后你只要说人话，Codex 会补全提示词再生成。改图有两种最顺手的方式：
+
+- **一次改多处**：用箭头/文字在图上标注（指向头发写「短发」、指向上衣写「短T」…），连图一起选中，说「按标注修改」，它读懂后整图改一版（保留人物与构图）。
+- **精修一小块**：画个矩形框、连图选中，说「把框里改成…」，只重画框内、其余不动。
+
+详见 [README.md](README.md)。
 
 ---
 
