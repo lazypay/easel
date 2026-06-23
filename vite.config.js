@@ -719,13 +719,28 @@ function canvasStoragePlugin() {
             sendJson(res, 400, { error: 'sourceSrc or sourceDataUrl is required' })
             return
           }
-          let sizeObj = parseExplicitSize(body.size)
-          if (!sizeObj) {
-            const dims = readImageDimensions(sourceBuffer)
-            const ratio = dims ? dims.width / dims.height : finiteNumber(body.ratio, 1)
-            sizeObj = computeGenerationSize(ratio, finiteNumber(body.targetPx, undefined))
+          let maskBuffer = null
+          let maskMimeType = 'image/png'
+          if (nonEmptyString(body.maskDataUrl)) {
+            const parsedMask = parseDataUrl(body.maskDataUrl)
+            if (parsedMask) {
+              maskBuffer = parsedMask.buffer
+              maskMimeType = parsedMask.mimeType || 'image/png'
+            }
           }
-          const size = `${sizeObj.width}x${sizeObj.height}`
+          const srcDims = readImageDimensions(sourceBuffer)
+          let size
+          if (maskBuffer && srcDims) {
+            // Inpaint: keep the exact source size so image and mask align.
+            size = `${srcDims.width}x${srcDims.height}`
+          } else {
+            let sizeObj = parseExplicitSize(body.size)
+            if (!sizeObj) {
+              const ratio = srcDims ? srcDims.width / srcDims.height : finiteNumber(body.ratio, 1)
+              sizeObj = computeGenerationSize(ratio, finiteNumber(body.targetPx, undefined))
+            }
+            size = `${sizeObj.width}x${sizeObj.height}`
+          }
           const { buffer } = await editImageToBuffer({
             apiKey,
             baseUrl: resolveImageBaseUrl(body),
@@ -733,7 +748,9 @@ function canvasStoragePlugin() {
             prompt,
             imageBuffer: sourceBuffer,
             mimeType,
-            size
+            size,
+            maskBuffer,
+            maskMimeType
           })
           const outDims = readImageDimensions(buffer) || sizeObj
           const saved = await saveEaselAsset(pageId, buffer)

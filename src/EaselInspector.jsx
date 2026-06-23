@@ -108,6 +108,39 @@ function downloadAsset(editor, shape) {
   return true
 }
 
+// Build an inpaint mask at the image's native resolution: opaque everywhere,
+// transparent inside the region rectangles (transparent = the area to regenerate).
+function buildMaskDataUrl(editor, image, regions) {
+  const asset = image.props?.assetId ? editor.getAsset(image.props.assetId) : null
+  const aw = asset?.props?.w
+  const ah = asset?.props?.h
+  const ib = editor.getShapePageBounds(image.id)
+  if (!aw || !ah || !ib || ib.w <= 0 || ib.h <= 0) return null
+  const canvas = document.createElement('canvas')
+  canvas.width = aw
+  canvas.height = ah
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+  ctx.fillStyle = 'rgba(0,0,0,1)'
+  ctx.fillRect(0, 0, aw, ah)
+  ctx.globalCompositeOperation = 'destination-out'
+  let any = false
+  for (const region of regions) {
+    const rb = editor.getShapePageBounds(region.id)
+    if (!rb) continue
+    const x0 = Math.max(0, Math.min(1, (rb.minX - ib.minX) / ib.w)) * aw
+    const y0 = Math.max(0, Math.min(1, (rb.minY - ib.minY) / ib.h)) * ah
+    const x1 = Math.max(0, Math.min(1, (rb.maxX - ib.minX) / ib.w)) * aw
+    const y1 = Math.max(0, Math.min(1, (rb.maxY - ib.minY) / ib.h)) * ah
+    if (x1 > x0 && y1 > y0) {
+      ctx.fillRect(x0, y0, x1 - x0, y1 - y0)
+      any = true
+    }
+  }
+  ctx.globalCompositeOperation = 'source-over'
+  return any ? canvas.toDataURL('image/png') : null
+}
+
 export function EaselInspector() {
   const editor = useEditor()
   const selectedIds = useValue('easel-selected', () => editor.getSelectedShapeIds(), [editor])
@@ -117,10 +150,20 @@ export function EaselInspector() {
     return shape && shape.type === 'image' ? shape : null
   })()
 
+  // Inpaint: an image plus one or more region shapes selected together.
+  const inpaintShapes = (() => {
+    if (selectedIds.length < 2) return null
+    const shapes = selectedIds.map((id) => editor.getShape(id)).filter(Boolean)
+    const image = shapes.find((s) => s.type === 'image')
+    const regions = image ? shapes.filter((s) => s.id !== image.id && s.type !== 'image') : []
+    return image && regions.length > 0 ? { image, regions } : null
+  })()
+
   const [prompt, setPrompt] = useState('')
   const [ratio, setRatio] = useState('1:1')
   const [selPrompt, setSelPrompt] = useState('')
   const [editPrompt, setEditPrompt] = useState('')
+  const [inpaintPrompt, setInpaintPrompt] = useState('')
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
 
@@ -251,6 +294,31 @@ export function EaselInspector() {
     setStatus('已删除选中图')
   }
 
+  function handleInpaint() {
+    if (!inpaintShapes) return
+    const text = inpaintPrompt.trim()
+    if (!text) return
+    const { image, regions } = inpaintShapes
+    const asset = image.props?.assetId ? editor.getAsset(image.props.assetId) : null
+    const src = asset?.props?.src
+    if (!src) {
+      setStatus('选中图没有可用的本地源')
+      return
+    }
+    const maskDataUrl = buildMaskDataUrl(editor, image, regions)
+    if (!maskDataUrl) {
+      setStatus('无法生成蒙版（矩形需与图片重叠）')
+      return
+    }
+    run('局部重绘中…（约 30~50s）', async () => {
+      const data = await callApi('/api/edit', { prompt: text, pageId: pageId(), sourceSrc: src, maskDataUrl })
+      editor.deleteShapes(regions.map((r) => r.id))
+      replaceImageInPlace(editor, image, data, { prompt: text, kind: 'inpaint' })
+      setInpaintPrompt('')
+      setStatus('已局部重绘并替换')
+    })
+  }
+
   const stop = (event) => event.stopPropagation()
 
   return (
@@ -332,6 +400,26 @@ export function EaselInspector() {
             删除
           </button>
         </div>
+      </section>
+
+      <section className="easel-inspector__section">
+        <label className="easel-inspector__label">{inpaintShapes ? '局部重绘：改框内区域' : '局部重绘：选中图 + 在图上画矩形'}</label>
+        <textarea
+          className="easel-inspector__textarea"
+          value={inpaintPrompt}
+          onChange={(e) => setInpaintPrompt(e.target.value)}
+          placeholder={inpaintShapes ? '框内要变成什么…' : '在图上画一个矩形框住要改的区域，连同图片一起选中'}
+          rows={2}
+          disabled={!inpaintShapes}
+        />
+        <button
+          type="button"
+          className="easel-btn easel-btn--primary"
+          disabled={busy || !inpaintShapes || !inpaintPrompt.trim()}
+          onClick={handleInpaint}
+        >
+          局部重绘
+        </button>
       </section>
 
       <div className="easel-inspector__status">{busy ? '⏳ ' : ''}{status}</div>

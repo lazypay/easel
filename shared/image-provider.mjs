@@ -175,11 +175,13 @@ async function requestImageGeneration({ apiKey, baseUrl, model, prompt, size, ex
 
 // True image-to-image via /images/edits. Primary format is JSON with
 // images:[{ image_url }] (accepts base64 data URLs); falls back to multipart.
-async function requestImageEdit({ apiKey, baseUrl, model, prompt, imageBuffer, mimeType = "image/png", size }) {
+async function requestImageEdit({ apiKey, baseUrl, model, prompt, imageBuffer, mimeType = "image/png", size, maskBuffer, maskMimeType = "image/png" }) {
   const dataUrl = `data:${mimeType};base64,${imageBuffer.toString("base64")}`;
+  const maskDataUrl = maskBuffer ? `data:${maskMimeType};base64,${maskBuffer.toString("base64")}` : null;
   try {
     const body = { model, prompt, images: [{ image_url: dataUrl }], response_format: "b64_json" };
     if (size) body.size = size;
+    if (maskDataUrl) body.mask = { image_url: maskDataUrl };
     const response = await fetchWithTimeout(`${baseUrl}/images/edits`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
@@ -192,6 +194,7 @@ async function requestImageEdit({ apiKey, baseUrl, model, prompt, imageBuffer, m
     form.append("prompt", prompt);
     if (model) form.append("model", model);
     if (size) form.append("size", size);
+    if (maskBuffer) form.append("mask", new Blob([maskBuffer], { type: maskMimeType }), "mask.png");
     form.append("response_format", "b64_json");
     const response = await fetchWithTimeout(`${baseUrl}/images/edits`, {
       method: "POST",
@@ -233,8 +236,8 @@ export async function generateImageToBuffer({ apiKey, baseUrl, model, prompt, si
 }
 
 // High-level: image-to-image (edit) -> PNG buffer.
-export async function editImageToBuffer({ apiKey, baseUrl, model, prompt, imageBuffer, mimeType, size }) {
-  const payload = await requestImageEdit({ apiKey, baseUrl, model, prompt, imageBuffer, mimeType, size });
+export async function editImageToBuffer({ apiKey, baseUrl, model, prompt, imageBuffer, mimeType, size, maskBuffer, maskMimeType }) {
+  const payload = await requestImageEdit({ apiKey, baseUrl, model, prompt, imageBuffer, mimeType, size, maskBuffer, maskMimeType });
   return bufferFromPayload(payload);
 }
 
