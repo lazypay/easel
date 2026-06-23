@@ -9,6 +9,7 @@ export const IMAGE_SIZE_MULTIPLE = 16;
 export const IMAGE_MIN_PIXELS = 655360;
 export const IMAGE_MAX_PIXELS = 8294400;
 export const IMAGE_MAX_SIDE = 4096;
+export const IMAGE_MAX_RATIO = 3;
 export const IMAGE_DEFAULT_BUDGET_PIXELS = 1600000;
 export const IMAGE_REQUEST_TIMEOUT_MS = 180000;
 
@@ -84,7 +85,9 @@ function floorToMultiple(value, multiple) {
 // Map an arbitrary ratio to a provider-legal pixel size: both sides multiples
 // of IMAGE_SIZE_MULTIPLE and total pixels within the allowed range.
 export function computeGenerationSize(ratio, budgetPixels) {
-  const safeRatio = ratio > 0 && Number.isFinite(ratio) ? ratio : 1;
+  const rawRatio = ratio > 0 && Number.isFinite(ratio) ? ratio : 1;
+  // The provider rejects sizes whose long:short ratio exceeds IMAGE_MAX_RATIO.
+  const safeRatio = clampNumber(rawRatio, 1 / IMAGE_MAX_RATIO, IMAGE_MAX_RATIO);
   const budget = clampNumber(finiteNumber(budgetPixels, IMAGE_DEFAULT_BUDGET_PIXELS), IMAGE_MIN_PIXELS, IMAGE_MAX_PIXELS);
 
   let width = clampNumber(roundToMultiple(Math.sqrt(budget * safeRatio), IMAGE_SIZE_MULTIPLE), IMAGE_SIZE_MULTIPLE, IMAGE_MAX_SIDE);
@@ -99,6 +102,14 @@ export function computeGenerationSize(ratio, budgetPixels) {
     const factor = Math.sqrt(IMAGE_MAX_PIXELS / (width * height));
     width = floorToMultiple(width * factor, IMAGE_SIZE_MULTIPLE);
     height = floorToMultiple(height * factor, IMAGE_SIZE_MULTIPLE);
+  }
+
+  // Guard against rounding nudging the ratio just past the provider limit.
+  for (let guard = 0; guard < 16 && width / height > IMAGE_MAX_RATIO && width > IMAGE_SIZE_MULTIPLE; guard += 1) {
+    width = floorToMultiple(width - IMAGE_SIZE_MULTIPLE, IMAGE_SIZE_MULTIPLE);
+  }
+  for (let guard = 0; guard < 16 && height / width > IMAGE_MAX_RATIO && height > IMAGE_SIZE_MULTIPLE; guard += 1) {
+    height = floorToMultiple(height - IMAGE_SIZE_MULTIPLE, IMAGE_SIZE_MULTIPLE);
   }
 
   return { width, height };
@@ -252,44 +263,55 @@ export async function editRegionToBuffer({ apiKey, baseUrl, model, prompt, image
   const H = meta.height || 0;
   if (!W || !H) throw new Error("Could not read source image dimensions.");
 
-  let x = Math.round(finiteNumber(region?.x, 0));
-  let y = Math.round(finiteNumber(region?.y, 0));
-  let w = Math.round(finiteNumber(region?.w, 0));
-  let h = Math.round(finiteNumber(region?.h, 0));
-  x = clampNumber(x, 0, Math.max(0, W - 1));
-  y = clampNumber(y, 0, Math.max(0, H - 1));
-  w = clampNumber(w, 1, W - x);
-  h = clampNumber(h, 1, H - y);
-  if (w < 8 || h < 8) throw new Error("Region is too small to edit.");
+  // Original box the user wants changed (clamped to the image).
+  const ox = clampNumber(Math.round(finiteNumber(region?.x, 0)), 0, Math.max(0, W - 1));
+  const oy = clampNumber(Math.round(finiteNumber(region?.y, 0)), 0, Math.max(0, H - 1));
+  const ow = clampNumber(Math.round(finiteNumber(region?.w, 0)), 1, W - ox);
+  const oh = clampNumber(Math.round(finiteNumber(region?.h, 0)), 1, H - oy);
+  if (ow < 8 || oh < 8) throw new Error("Region is too small to edit.");
 
-  // Crop the region, upscale it to a provider-legal size, regenerate, scale back.
-  const cropBuf = await sharp(imageBuffer).extract({ left: x, top: y, width: w, height: h }).png().toBuffer();
-  const gen = computeGenerationSize(w / h, budgetPixels);
+  // The provider rejects long:short > 3:1. If the box is more extreme, expand the
+  // crop along its short axis (grab real surrounding context, no distortion); we
+  // still composite back only the original box.
+  let ex = ox, ey = oy, ew = ow, eh = oh;
+  if (ew / eh > IMAGE_MAX_RATIO) {
+    eh = Math.min(H, Math.ceil(ew / IMAGE_MAX_RATIO));
+    ey = clampNumber(Math.round(oy + oh / 2 - eh / 2), 0, H - eh);
+  } else if (eh / ew > IMAGE_MAX_RATIO) {
+    ew = Math.min(W, Math.ceil(eh / IMAGE_MAX_RATIO));
+    ex = clampNumber(Math.round(ox + ow / 2 - ew / 2), 0, W - ew);
+  }
+
+  // Crop the (possibly expanded) region, upscale to a legal size, regenerate, scale back.
+  const cropBuf = await sharp(imageBuffer).extract({ left: ex, top: ey, width: ew, height: eh }).png().toBuffer();
+  const gen = computeGenerationSize(ew / eh, budgetPixels);
   const genStr = `${gen.width}x${gen.height}`;
   const cropResized = await sharp(cropBuf).resize(gen.width, gen.height, { fit: "fill" }).png().toBuffer();
   const { buffer: patchRaw } = await editImageToBuffer({
     apiKey, baseUrl, model, prompt, imageBuffer: cropResized, mimeType: "image/png", size: genStr,
   });
 
-  // Feathered alpha (white center fading to transparent edges) for a soft seam.
-  const feather = clampNumber(Math.round(Math.min(w, h) * 0.05), 2, 64);
-  const innerW = Math.max(1, w - feather * 2);
-  const innerH = Math.max(1, h - feather * 2);
+  // Feathered alpha covering only the ORIGINAL box within the expanded crop.
+  const relX = ox - ex;
+  const relY = oy - ey;
+  const feather = clampNumber(Math.round(Math.min(ow, oh) * 0.05), 2, 64);
+  const innerW = Math.max(1, ow - feather * 2);
+  const innerH = Math.max(1, oh - feather * 2);
   const whiteRect = await sharp({ create: { width: innerW, height: innerH, channels: 3, background: { r: 255, g: 255, b: 255 } } }).png().toBuffer();
-  const maskRgb = await sharp({ create: { width: w, height: h, channels: 3, background: { r: 0, g: 0, b: 0 } } })
-    .composite([{ input: whiteRect, left: feather, top: feather }])
+  const maskRgb = await sharp({ create: { width: ew, height: eh, channels: 3, background: { r: 0, g: 0, b: 0 } } })
+    .composite([{ input: whiteRect, left: relX + feather, top: relY + feather }])
     .blur(feather)
     .png()
     .toBuffer();
   const alpha = await sharp(maskRgb).extractChannel(0).raw().toBuffer();
 
-  const patchRgb = await sharp(patchRaw).resize(w, h, { fit: "fill" }).removeAlpha().raw().toBuffer();
-  const patchRgba = await sharp(patchRgb, { raw: { width: w, height: h, channels: 3 } })
-    .joinChannel(alpha, { raw: { width: w, height: h, channels: 1 } })
+  const patchRgb = await sharp(patchRaw).resize(ew, eh, { fit: "fill" }).removeAlpha().raw().toBuffer();
+  const patchRgba = await sharp(patchRgb, { raw: { width: ew, height: eh, channels: 3 } })
+    .joinChannel(alpha, { raw: { width: ew, height: eh, channels: 1 } })
     .png()
     .toBuffer();
 
-  const outBuffer = await sharp(imageBuffer).composite([{ input: patchRgba, left: x, top: y }]).png().toBuffer();
+  const outBuffer = await sharp(imageBuffer).composite([{ input: patchRgba, left: ex, top: ey }]).png().toBuffer();
   return { buffer: outBuffer, width: W, height: H, size: genStr };
 }
 
