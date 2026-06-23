@@ -30,7 +30,7 @@ function sendError(id, code, message) {
 
 function normalizeUrl(args = {}) {
   const value =
-    nonEmptyString(args.easelUrl) || nonEmptyString(args.cowartUrl) || nonEmptyString(process.env.EASEL_URL) || DEFAULT_URL;
+    nonEmptyString(args.easelUrl) || nonEmptyString(process.env.EASEL_URL) || DEFAULT_URL;
   return value.replace(/\/+$/, "");
 }
 

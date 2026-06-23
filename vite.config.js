@@ -16,15 +16,15 @@ import {
   nonEmptyString
 } from './shared/image-provider.mjs'
 
-const projectDir = resolve(process.env.EASEL_PROJECT_DIR ?? process.env.COWART_PROJECT_DIR ?? process.cwd())
-const canvasDir = resolve(process.env.EASEL_CANVAS_DIR ?? process.env.COWART_CANVAS_DIR ?? join(projectDir, 'canvas'))
-const canvasFile = join(canvasDir, 'cowart-canvas.json')
-const selectionFile = join(canvasDir, 'cowart-selection.json')
-const viewStateFile = join(canvasDir, 'cowart-view-state.json')
+const projectDir = resolve(process.env.EASEL_PROJECT_DIR ?? process.cwd())
+const canvasDir = resolve(process.env.EASEL_CANVAS_DIR ?? join(projectDir, 'studio'))
+const canvasFile = join(canvasDir, 'easel-canvas.json')
+const selectionFile = join(canvasDir, 'easel-selection.json')
+const viewStateFile = join(canvasDir, 'easel-view-state.json')
 const canvasPagesDir = join(canvasDir, 'pages')
 const canvasAssetsDir = join(canvasDir, 'assets')
 const pagesManifestFile = join(canvasPagesDir, 'manifest.json')
-const canvasFileName = 'cowart-canvas.json'
+const canvasFileName = 'easel-canvas.json'
 const pageIdPrefix = 'page:'
 const globalAssetsRoute = '/assets/'
 const pageAssetsRoute = '/page-assets/'
@@ -435,7 +435,7 @@ async function saveCanvasSnapshot(snapshot) {
 
   const manifest = {
     version: 1,
-    source: 'cowart',
+    source: 'easel',
     pages: pages.map((page) => ({
       id: page.id,
       name: page.name,
@@ -486,7 +486,7 @@ async function serveCanvasAsset(req, res, next) {
 
 function canvasStoragePlugin() {
   return {
-    name: 'cowart-canvas-storage',
+    name: 'easel-canvas-storage',
     configureServer(server) {
       server.middlewares.use(serveCanvasAsset)
 
@@ -541,7 +541,7 @@ function canvasStoragePlugin() {
             const body = await readRequestBody(req)
             const selection = JSON.parse(body)
             if (!isSelectionState(selection)) {
-              sendJson(res, 400, { error: 'Expected a Cowart selection state.' })
+              sendJson(res, 400, { error: 'Expected an Easel selection state.' })
               return
             }
 
@@ -588,7 +588,7 @@ function canvasStoragePlugin() {
             const body = await readRequestBody(req)
             const viewState = JSON.parse(body)
             if (!isViewState(viewState)) {
-              sendJson(res, 400, { error: 'Expected a Cowart view state.' })
+              sendJson(res, 400, { error: 'Expected an Easel view state.' })
               return
             }
 
@@ -773,6 +773,7 @@ export default defineConfig({
   plugins: [react(), canvasStoragePlugin()],
   server: {
     host: '127.0.0.1',
-    port: 43219
+    port: 43219,
+    strictPort: true
   }
 })

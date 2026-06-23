@@ -1,9 +1,9 @@
 node_modules/
 dist/
 .DS_Store
+/studio/
 /canvas/
 .env
 .env.*
 easel-image.config.json
-cowart-image.config.json
 .cursor/

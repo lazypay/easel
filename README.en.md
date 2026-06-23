@@ -1,6 +1,6 @@
 # Easel
 
-Easel is a local **infinite-canvas AI image studio** for Codex, built on [tldraw](https://github.com/tldraw/tldraw). Generate images directly on the canvas, run true image-to-image edits, spin up variants, compare and iterate - all with your own image API (BYOK, multi-provider). The Codex agent can also read and drive the canvas. Canvas data is saved in the active project's `canvas/`, not in the plugin repo.
+Easel is a local **infinite-canvas AI image studio** for Codex, built on [tldraw](https://github.com/tldraw/tldraw). Generate images directly on the canvas, run true image-to-image edits, spin up variants, compare and iterate - all with your own image API (BYOK, multi-provider). The Codex agent can also read and drive the canvas. Canvas data is saved in the active project's `studio/`, not in the plugin repo.
 
 中文说明: [README.md](README.md)
 
@@ -16,7 +16,7 @@ Easel is a local **infinite-canvas AI image studio** for Codex, built on [tldraw
 
 ```bash
 mkdir -p ~/plugins
-git clone <your-repo-url> ~/plugins/easel
+git clone https://github.com/lazypay/easel.git ~/plugins/easel
 cd ~/plugins/easel
 npm install
 npm run build

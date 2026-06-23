@@ -25,6 +25,29 @@ function sourceField(src) {
   return { sourceSrc: src }
 }
 
+const align16 = (n) => Math.max(16, Math.round(n / 16) * 16)
+
+// Re-render an image src to exact target dimensions, returning a PNG data URL.
+function rasterizeToSize(src, tw, th) {
+  return new Promise((resolve) => {
+    const im = new Image()
+    im.onload = () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = tw
+      canvas.height = th
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        resolve(null)
+        return
+      }
+      ctx.drawImage(im, 0, 0, tw, th)
+      resolve(canvas.toDataURL('image/png'))
+    }
+    im.onerror = () => resolve(null)
+    im.src = src
+  })
+}
+
 function createImageAsset(editor, result) {
   const assetId = AssetRecordType.createId()
   editor.createAssets([
@@ -133,28 +156,25 @@ function downloadAsset(editor, shape) {
 
 // Build an inpaint mask at the image's native resolution: opaque everywhere,
 // transparent inside the region rectangles (transparent = the area to regenerate).
-function buildMaskDataUrl(editor, image, regions) {
-  const asset = image.props?.assetId ? editor.getAsset(image.props.assetId) : null
-  const aw = asset?.props?.w
-  const ah = asset?.props?.h
+function buildMaskDataUrl(editor, image, regions, maskW, maskH) {
   const ib = editor.getShapePageBounds(image.id)
-  if (!aw || !ah || !ib || ib.w <= 0 || ib.h <= 0) return null
+  if (!maskW || !maskH || !ib || ib.w <= 0 || ib.h <= 0) return null
   const canvas = document.createElement('canvas')
-  canvas.width = aw
-  canvas.height = ah
+  canvas.width = maskW
+  canvas.height = maskH
   const ctx = canvas.getContext('2d')
   if (!ctx) return null
   ctx.fillStyle = 'rgba(0,0,0,1)'
-  ctx.fillRect(0, 0, aw, ah)
+  ctx.fillRect(0, 0, maskW, maskH)
   ctx.globalCompositeOperation = 'destination-out'
   let any = false
   for (const region of regions) {
     const rb = editor.getShapePageBounds(region.id)
     if (!rb) continue
-    const x0 = Math.max(0, Math.min(1, (rb.minX - ib.minX) / ib.w)) * aw
-    const y0 = Math.max(0, Math.min(1, (rb.minY - ib.minY) / ib.h)) * ah
-    const x1 = Math.max(0, Math.min(1, (rb.maxX - ib.minX) / ib.w)) * aw
-    const y1 = Math.max(0, Math.min(1, (rb.maxY - ib.minY) / ib.h)) * ah
+    const x0 = Math.max(0, Math.min(1, (rb.minX - ib.minX) / ib.w)) * maskW
+    const y0 = Math.max(0, Math.min(1, (rb.minY - ib.minY) / ib.h)) * maskH
+    const x1 = Math.max(0, Math.min(1, (rb.maxX - ib.minX) / ib.w)) * maskW
+    const y1 = Math.max(0, Math.min(1, (rb.maxY - ib.minY) / ib.h)) * maskH
     if (x1 > x0 && y1 > y0) {
       ctx.fillRect(x0, y0, x1 - x0, y1 - y0)
       any = true
@@ -383,17 +403,34 @@ export function EaselInspector() {
     const { image, regions } = inpaintShapes
     const asset = image.props?.assetId ? editor.getAsset(image.props.assetId) : null
     const src = asset?.props?.src
-    if (!src) {
-      setStatus('选中图没有可用的本地源')
-      return
-    }
-    const maskDataUrl = buildMaskDataUrl(editor, image, regions)
-    if (!maskDataUrl) {
-      setStatus('无法生成蒙版（矩形需与图片重叠）')
+    const aw = Number(asset?.props?.w) || 0
+    const ah = Number(asset?.props?.h) || 0
+    if (!src || !aw || !ah) {
+      setStatus('选中图缺少可用的源或尺寸')
       return
     }
     run('局部重绘中…（约 30~50s）', async () => {
-      const data = await callApi('/api/edit', { prompt: text, pageId: pageId(), ...sourceField(src), maskDataUrl })
+      // The provider needs sides multiple of 16; align external images (and their mask).
+      const needAlign = aw % 16 !== 0 || ah % 16 !== 0
+      const maskW = needAlign ? align16(aw) : aw
+      const maskH = needAlign ? align16(ah) : ah
+      const maskDataUrl = buildMaskDataUrl(editor, image, regions, maskW, maskH)
+      if (!maskDataUrl) {
+        setStatus('无法生成蒙版（矩形需与图片重叠）')
+        return
+      }
+      let sourcePayload
+      if (needAlign) {
+        const aligned = await rasterizeToSize(src, maskW, maskH)
+        if (!aligned) {
+          setStatus('源图对齐处理失败')
+          return
+        }
+        sourcePayload = { sourceDataUrl: aligned }
+      } else {
+        sourcePayload = sourceField(src)
+      }
+      const data = await callApi('/api/edit', { prompt: text, pageId: pageId(), ...sourcePayload, maskDataUrl })
       editor.deleteShapes(regions.map((r) => r.id))
       replaceImageInPlace(editor, image, data, { prompt: text, kind: 'inpaint' })
       setInpaintPrompt('')

@@ -1,6 +1,8 @@
 # Easel
 
-Easel 是一个面向 Codex 的本地**无限画布 AI 图像创作工作站**，基于 [tldraw](https://github.com/tldraw/tldraw)。在画布上**直接点按钮生成图片**、做图生图编辑、出变体、对比迭代，全部用你自己的图像接口（BYOK，多 provider）。Codex agent 也能读取并驱动画布。画布数据保存在当前项目目录的 `canvas/`，不写进插件仓库。
+Easel 是一个面向 Codex 的本地**无限画布 AI 图像创作工作站**，基于 [tldraw](https://github.com/tldraw/tldraw)。在画布上**直接点按钮生成图片**、做图生图编辑、出变体、对比迭代，全部用你自己的图像接口（BYOK，多 provider）。Codex agent 也能读取并驱动画布。画布数据保存在当前项目目录的 `studio/`，不写进插件仓库。
+
+> 🚀 新手请看 **[上手指南 GETTING-STARTED.md](GETTING-STARTED.md)**（照着做 5 分钟跑起来）。
 
 English: [README.en.md](README.en.md)
 
@@ -16,7 +18,7 @@ English: [README.en.md](README.en.md)
 
 ```bash
 mkdir -p ~/plugins
-git clone <your-repo-url> ~/plugins/easel
+git clone https://github.com/lazypay/easel.git ~/plugins/easel
 cd ~/plugins/easel
 npm install
 npm run build
