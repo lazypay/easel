@@ -141,6 +141,63 @@ function buildMaskDataUrl(editor, image, regions) {
   return any ? canvas.toDataURL('image/png') : null
 }
 
+const PRESETS = [
+  { id: '电商主图', ratio: '1:1', text: '电商产品主图，纯白背景，居中构图，柔和影棚布光，高细节，干净，留出文案空间：' },
+  { id: '竖版海报', ratio: '9:16', text: '竖版宣传海报，强视觉冲击，醒目标题文字，鲜明品牌色，留白排版：' },
+  { id: '头像', ratio: '1:1', text: '人物头像，半身，柔光，简洁干净背景，专业质感：' },
+  { id: '横幅Banner', ratio: '16:9', text: '网站横幅 banner，宽幅构图，主体偏一侧，大面积留白放标题：' },
+  { id: '扁平插画', ratio: '4:3', text: '扁平矢量插画风格，清新配色，简洁线条，现代感：' }
+]
+
+// Composite the given images into one grid PNG and download it (local only).
+async function exportContactSheet(editor, images) {
+  const srcs = images.map((s) => editor.getAsset(s.props?.assetId)?.props?.src).filter(Boolean)
+  if (srcs.length === 0) return false
+  const loaded = await Promise.all(
+    srcs.map(
+      (src) =>
+        new Promise((resolve) => {
+          const im = new Image()
+          im.onload = () => resolve(im)
+          im.onerror = () => resolve(null)
+          im.src = src
+        })
+    )
+  )
+  const imgs = loaded.filter(Boolean)
+  if (imgs.length === 0) return false
+  const cell = 512
+  const gap = 16
+  const cols = Math.min(imgs.length, 3)
+  const rows = Math.ceil(imgs.length / cols)
+  const width = cols * cell + (cols + 1) * gap
+  const height = rows * cell + (rows + 1) * gap
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return false
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, width, height)
+  imgs.forEach((im, i) => {
+    const col = i % cols
+    const row = Math.floor(i / cols)
+    const cx = gap + col * (cell + gap)
+    const cy = gap + row * (cell + gap)
+    const scale = Math.min(cell / im.width, cell / im.height)
+    const w = im.width * scale
+    const h = im.height * scale
+    ctx.drawImage(im, cx + (cell - w) / 2, cy + (cell - h) / 2, w, h)
+  })
+  const link = document.createElement('a')
+  link.href = canvas.toDataURL('image/png')
+  link.download = `easel-contact-sheet-${Date.now()}.png`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  return true
+}
+
 export function EaselInspector() {
   const editor = useEditor()
   const selectedIds = useValue('easel-selected', () => editor.getSelectedShapeIds(), [editor])
@@ -158,6 +215,8 @@ export function EaselInspector() {
     const regions = image ? shapes.filter((s) => s.id !== image.id && s.type !== 'image') : []
     return image && regions.length > 0 ? { image, regions } : null
   })()
+
+  const selectedImages = selectedIds.map((id) => editor.getShape(id)).filter((s) => s?.type === 'image')
 
   const [prompt, setPrompt] = useState('')
   const [ratio, setRatio] = useState('1:1')
@@ -319,6 +378,38 @@ export function EaselInspector() {
     })
   }
 
+  function handleBatch() {
+    const lines = prompt
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    if (lines.length === 0) return
+    run('批量生成…', async () => {
+      const c = center()
+      for (let i = 0; i < lines.length; i += 1) {
+        setStatus(`批量 ${i + 1}/${lines.length}…`)
+        const data = await callApi('/api/generate', { prompt: lines[i], pageId: pageId(), ratio: ratioValue() })
+        const col = i % 3
+        const row = Math.floor(i / 3)
+        insertImageCard(editor, data, c.x + (col - 1) * 420, c.y + row * 420, { prompt: lines[i], kind: 'batch' })
+      }
+      setStatus(`批量完成：${lines.length} 张`)
+    })
+  }
+
+  function handleContactSheet() {
+    if (selectedImages.length < 2) return
+    run('拼版导出…', async () => {
+      const ok = await exportContactSheet(editor, selectedImages)
+      setStatus(ok ? '已导出拼版 PNG' : '拼版失败')
+    })
+  }
+
+  function applyPreset(preset) {
+    setPrompt((current) => preset.text + (current || ''))
+    setRatio(preset.ratio)
+  }
+
   const stop = (event) => event.stopPropagation()
 
   return (
@@ -334,6 +425,13 @@ export function EaselInspector() {
           placeholder="描述你想要的图，例如：山西刀削面产品宣传海报，热气、暖色调"
           rows={4}
         />
+        <div className="easel-inspector__ratios">
+          {PRESETS.map((p) => (
+            <button key={p.id} type="button" className="easel-chip" onClick={() => applyPreset(p)} title={p.text}>
+              {p.id}
+            </button>
+          ))}
+        </div>
         <div className="easel-inspector__ratios">
           {RATIOS.map((r) => (
             <button
@@ -354,6 +452,9 @@ export function EaselInspector() {
             4 变体
           </button>
         </div>
+        <button type="button" className="easel-btn" disabled={busy || !prompt.trim()} onClick={handleBatch}>
+          批量生成（每行一句）
+        </button>
       </section>
 
       <section className="easel-inspector__section">
@@ -419,6 +520,15 @@ export function EaselInspector() {
           onClick={handleInpaint}
         >
           局部重绘
+        </button>
+      </section>
+
+      <section className="easel-inspector__section">
+        <label className="easel-inspector__label">
+          {selectedImages.length >= 2 ? `拼版导出（已选 ${selectedImages.length} 张）` : '拼版导出：多选 2+ 张图'}
+        </label>
+        <button type="button" className="easel-btn" disabled={busy || selectedImages.length < 2} onClick={handleContactSheet}>
+          拼版导出 PNG
         </button>
       </section>
 
