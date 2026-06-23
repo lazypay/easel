@@ -56,6 +56,20 @@ body {
   font-weight: 700;
 }
 
+.easel-inspector__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #374151;
+  cursor: pointer;
+  user-select: none;
+}
+
+.easel-inspector__toggle input {
+  margin: 0;
+}
+
 .easel-inspector__section {
   display: flex;
   flex-direction: column;

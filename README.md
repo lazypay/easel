@@ -62,7 +62,7 @@ macOS / Linux 用 `export ... >> ~/.zshrc` 后 `source`。设置后重新加载 
 2. 直接说想要什么。给一句话也行，Codex 会结合画布上下文把提示词补全后再生成。
 3. 想**一次改多处**：用箭头/文字在图上标注（如箭头指向头发写“短发”、指向上衣写“短T”、指向手写“ipad”），连同图片一起选中，跟 Codex 说“按标注修改”。它读懂后整图改一版（`edit_easel_image`），保留人物与构图——这种"指着说"最省事、最发挥大模型。
 4. 想**精修一小块**、其余绝对不动：用矩形工具画个框，连图选中，说“把框里改成…”，只重画框内（`edit_easel_region`）。
-5. 也可以用右上角 Inspector 面板手动操作：写提示词→选比例→生成/4 变体；选中图迭代；画矩形+选中做局部重绘。
+5. 右上角 Inspector 面板有「**发给 Codex 执行**」开关（默认开）：开启时点按钮不直接出图，而是把任务（连同要改的那张图 / 那个框，点击瞬间就钉死了）加入队列；你在对话里说一句"**执行画布请求**"，Codex 就补全提示词后逐条执行。关掉开关则按钮直接出图（不经过 Codex）。
 
 ## MCP 工具
 
@@ -70,6 +70,8 @@ macOS / Linux 用 `export ... >> ~/.zshrc` 后 `source`。设置后重新加载 
 - `generate_easel_image`：按 `ratio`/`size` 生成并作为图卡插入画布（`placeBesideSelection` 放在选中项旁）。
 - `edit_easel_image`：对选中图做整图图生图，结果放在原图旁。
 - `edit_easel_region`：只重画矩形框内区域并**原地替换**（真·区域重绘，不依赖 provider mask）。
+- `regenerate_easel_image`：用新生成的图原地替换选中图。
+- `get_easel_requests` / `complete_easel_request`：读取 / 清除画布按钮发来的待执行队列。
 
 ## 技能
 

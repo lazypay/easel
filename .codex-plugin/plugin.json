@@ -1,6 +1,6 @@
 {
   "name": "easel",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Easel - a local infinite-canvas AI image studio for Codex, powered by tldraw. Generate, edit (image-to-image), iterate and compare images right on the canvas with your own image API.",
   "author": {
     "name": "lazypay"

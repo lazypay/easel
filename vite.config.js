@@ -22,6 +22,7 @@ const canvasDir = resolve(process.env.EASEL_CANVAS_DIR ?? join(projectDir, 'stud
 const canvasFile = join(canvasDir, 'easel-canvas.json')
 const selectionFile = join(canvasDir, 'easel-selection.json')
 const viewStateFile = join(canvasDir, 'easel-view-state.json')
+const requestsFile = join(canvasDir, 'easel-requests.json')
 const canvasPagesDir = join(canvasDir, 'pages')
 const canvasAssetsDir = join(canvasDir, 'assets')
 const pagesManifestFile = join(canvasPagesDir, 'manifest.json')
@@ -146,6 +147,22 @@ async function saveEaselAsset(pageId, buffer, ext = '.png') {
   const fileName = `easel-gen-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`
   await writeFile(join(dir, fileName), buffer)
   return { fileName, src: pageAssetUrl(pageId, fileName), fileSize: buffer.length }
+}
+
+// Pending request queue: canvas buttons enqueue intents here; the Codex agent
+// reads and executes them via MCP, so every button can "go through Codex".
+async function readRequestsQueue() {
+  try {
+    const data = JSON.parse(await readFile(requestsFile, 'utf8'))
+    return Array.isArray(data) ? data : []
+  } catch {
+    return []
+  }
+}
+
+async function writeRequestsQueue(list) {
+  await mkdir(canvasDir, { recursive: true })
+  await writeFile(requestsFile, JSON.stringify(list, null, 2))
 }
 
 function getPageRecords(snapshot) {
@@ -777,6 +794,58 @@ function canvasStoragePlugin() {
             provider = new URL(baseUrl).host
           } catch {}
           sendJson(res, 200, { ok: true, ...saved, width: outDims.width, height: outDims.height, size, model, provider })
+        } catch (error) {
+          sendJson(res, 500, { error: error.message })
+        }
+      })
+
+      server.middlewares.use('/api/requests', async (req, res) => {
+        try {
+          const sub = (req.url || '').split('?')[0]
+          if (req.method === 'POST' && (sub === '/complete' || sub === '/complete/')) {
+            const body = JSON.parse((await readRequestBody(req)) || '{}')
+            const id = nonEmptyString(body.id)
+            let list = await readRequestsQueue()
+            if (body.all === true) list = []
+            else if (id) list = list.filter((r) => r.id !== id)
+            await writeRequestsQueue(list)
+            sendJson(res, 200, { ok: true, pending: list.length })
+            return
+          }
+          if (req.method === 'GET') {
+            const list = await readRequestsQueue()
+            sendJson(res, 200, { ok: true, requests: list, pending: list.length })
+            return
+          }
+          if (req.method === 'POST') {
+            const body = JSON.parse((await readRequestBody(req)) || '{}')
+            const action = nonEmptyString(body.action)
+            if (!action) {
+              sendJson(res, 400, { error: 'action is required' })
+              return
+            }
+            const list = await readRequestsQueue()
+            const entry = {
+              id: `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+              createdAt: new Date().toISOString(),
+              action,
+              prompt: typeof body.prompt === 'string' ? body.prompt : '',
+              ...(Array.isArray(body.prompts) ? { prompts: body.prompts } : {}),
+              ...(Number.isFinite(body.ratio) ? { ratio: body.ratio } : {}),
+              ...(Number.isFinite(body.count) ? { count: body.count } : {}),
+              ...(nonEmptyString(body.targetShapeId) ? { targetShapeId: body.targetShapeId } : {}),
+              ...(body.region && typeof body.region === 'object' ? { region: body.region } : {}),
+              ...(Array.isArray(body.regionShapeIds) ? { regionShapeIds: body.regionShapeIds } : {}),
+              ...(nonEmptyString(body.pageId) ? { pageId: body.pageId } : {})
+            }
+            list.push(entry)
+            await writeRequestsQueue(list)
+            sendJson(res, 200, { ok: true, id: entry.id, pending: list.length })
+            return
+          }
+          res.statusCode = 405
+          res.setHeader('allow', 'GET, POST')
+          res.end()
         } catch (error) {
           sendJson(res, 500, { error: error.message })
         }

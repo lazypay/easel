@@ -239,6 +239,28 @@ export function EaselInspector() {
   const [inpaintPrompt, setInpaintPrompt] = useState('')
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
+  const [sendToCodex, setSendToCodex] = useState(true)
+  const [pending, setPending] = useState(0)
+
+  // Poll the pending-request queue so the UI shows how many actions await Codex.
+  useEffect(() => {
+    let alive = true
+    const tick = async () => {
+      try {
+        const res = await fetch('/api/requests')
+        const data = await res.json()
+        if (alive) setPending(data?.pending ?? 0)
+      } catch {
+        /* ignore */
+      }
+    }
+    tick()
+    const timer = window.setInterval(tick, 3000)
+    return () => {
+      alive = false
+      window.clearInterval(timer)
+    }
+  }, [])
 
   // Prefill the selected image's prompt when selection changes.
   useEffect(() => {
@@ -276,9 +298,36 @@ export function EaselInspector() {
     }
   }
 
+  // Send an intent to the Codex queue instead of calling the API directly.
+  // The request pins the exact target image (and region) captured at click time.
+  async function enqueue(payload) {
+    if (busy) return
+    setBusy(true)
+    setStatus('发送到 Codex…')
+    try {
+      const res = await fetch('/api/requests', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`)
+      setPending(data.pending ?? 0)
+      setStatus(`已发给 Codex（待执行 ${data.pending}）。去对话说“执行画布请求”`)
+    } catch (error) {
+      setStatus(`失败：${error.message}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   function handleGenerate() {
     const text = prompt.trim()
     if (!text) return
+    if (sendToCodex) {
+      enqueue({ action: 'generate', prompt: text, ratio: ratioValue(), pageId: pageId() })
+      return
+    }
     run('生成中…', async () => {
       const data = await callApi('/api/generate', { prompt: text, pageId: pageId(), ratio: ratioValue() })
       const c = center()
@@ -290,6 +339,10 @@ export function EaselInspector() {
   function handleVariants(count = 4) {
     const text = prompt.trim()
     if (!text) return
+    if (sendToCodex) {
+      enqueue({ action: 'variants', prompt: text, ratio: ratioValue(), count, pageId: pageId() })
+      return
+    }
     run('生成变体…', async () => {
       const c = center()
       const groupId = `vg-${Date.now()}`
@@ -311,8 +364,12 @@ export function EaselInspector() {
   function handleRegenerate() {
     const text = selPrompt.trim()
     if (!selectedImage || !text) return
+    const ratioOfSel = selectedImage.props?.h ? selectedImage.props.w / selectedImage.props.h : 1
+    if (sendToCodex) {
+      enqueue({ action: 'regenerate', prompt: text, targetShapeId: selectedImage.id, ratio: ratioOfSel, pageId: pageId() })
+      return
+    }
     run('重新生成并替换…', async () => {
-      const ratioOfSel = selectedImage.props?.h ? selectedImage.props.w / selectedImage.props.h : 1
       const data = await callApi('/api/generate', { prompt: text, pageId: pageId(), ratio: ratioOfSel })
       replaceImageInPlace(editor, selectedImage, data, { prompt: text, kind: 'regenerate' })
       setStatus('已用新图替换选中图')
@@ -322,8 +379,12 @@ export function EaselInspector() {
   function handleVariantFromSelected() {
     const text = selPrompt.trim()
     if (!selectedImage || !text) return
+    const ratioOfSel = selectedImage.props?.h ? selectedImage.props.w / selectedImage.props.h : 1
+    if (sendToCodex) {
+      enqueue({ action: 'variant', prompt: text, targetShapeId: selectedImage.id, ratio: ratioOfSel, pageId: pageId() })
+      return
+    }
     run('生成变体…', async () => {
-      const ratioOfSel = selectedImage.props?.h ? selectedImage.props.w / selectedImage.props.h : 1
       const data = await callApi('/api/generate', { prompt: text, pageId: pageId(), ratio: ratioOfSel })
       const b = editor.getShapePageBounds(selectedImage.id)
       const size = displaySize(data.width, data.height)
@@ -342,6 +403,10 @@ export function EaselInspector() {
     const src = asset?.props?.src
     if (!src) {
       setStatus('选中图没有可用的本地源')
+      return
+    }
+    if (sendToCodex) {
+      enqueue({ action: 'edit', prompt: text, targetShapeId: selectedImage.id, pageId: pageId() })
       return
     }
     run('图生图编辑中…（约 30~50s）', async () => {
@@ -385,6 +450,11 @@ export function EaselInspector() {
       setStatus('矩形需与图片重叠')
       return
     }
+    if (sendToCodex) {
+      enqueue({ action: 'region', prompt: text, targetShapeId: image.id, region, regionShapeIds: regions.map((r) => r.id), pageId: pageId() })
+      setInpaintPrompt('')
+      return
+    }
     run('局部重绘中…（约 30~50s）', async () => {
       const data = await callApi('/api/edit', { prompt: text, pageId: pageId(), ...sourceField(src), region })
       editor.deleteShapes(regions.map((r) => r.id))
@@ -400,6 +470,10 @@ export function EaselInspector() {
       .map((s) => s.trim())
       .filter(Boolean)
     if (lines.length === 0) return
+    if (sendToCodex) {
+      enqueue({ action: 'batch', prompts: lines, ratio: ratioValue(), pageId: pageId() })
+      return
+    }
     run('批量生成…', async () => {
       const c = center()
       for (let i = 0; i < lines.length; i += 1) {
@@ -431,6 +505,11 @@ export function EaselInspector() {
   return (
     <div className="easel-inspector" onPointerDown={stop} onWheel={stop} onKeyDown={stop}>
       <div className="easel-inspector__title">Easel 图像工作站</div>
+
+      <label className="easel-inspector__toggle" title="开启后，生成/编辑/局部重绘等按钮会把任务发给 Codex 队列，由你在对话里说“执行画布请求”来处理；关闭则直接出图。">
+        <input type="checkbox" checked={sendToCodex} onChange={(e) => setSendToCodex(e.target.checked)} />
+        发给 Codex 执行{pending > 0 ? `（待执行 ${pending}）` : ''}
+      </label>
 
       <section className="easel-inspector__section">
         <label className="easel-inspector__label">新建图片</label>

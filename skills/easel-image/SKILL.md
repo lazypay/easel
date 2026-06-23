@@ -66,6 +66,23 @@ Frequently the easiest way to edit: the user draws arrows / text / notes on the 
 
 Annotations are ordinary tldraw arrow / text / note shapes — no special tool needed.
 
+## Executing canvas button requests (the queue)
+
+The canvas Inspector has a "发给 Codex 执行 / send to Codex" toggle. When it is on, clicking a button does NOT generate directly — it appends a request to a queue, pinning the exact target image (and region) at click time. When the user says something like "执行画布请求 / process the canvas requests", do this:
+
+1. Call `get_easel_requests`. Each entry has: `id`, `action`, `prompt` (or `prompts` for batch), `ratio`, `count`, `targetShapeId`, `region`, `regionShapeIds`, `pageId`.
+2. For each request, refine the prompt as usual, then run the matching tool:
+   - `generate` → `generate_easel_image` `{ prompt, ratio, pageId }`
+   - `variants` → call `generate_easel_image` `count` times
+   - `batch` → call `generate_easel_image` once per entry in `prompts`
+   - `edit` → `edit_easel_image` `{ prompt, sourceShapeId: targetShapeId }`
+   - `region` → `edit_easel_region` `{ prompt, sourceShapeId: targetShapeId, region, deleteShapeIds: regionShapeIds }`
+   - `regenerate` → `regenerate_easel_image` `{ prompt, sourceShapeId: targetShapeId, ratio }`
+3. After each one succeeds, call `complete_easel_request` with its `id`.
+4. Briefly report what you did.
+
+`targetShapeId` identifies exactly which image to act on (captured when the user clicked), so you never have to guess which image.
+
 ## Notes
 
 - Requires `EASEL_IMAGE_API_KEY` (or `OPENAI_API_KEY`) in the environment. If a tool reports no key, tell the user to set it locally and restart Codex.

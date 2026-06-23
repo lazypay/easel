@@ -16,6 +16,9 @@ const TOOL_GET_SELECTION = "get_easel_selection";
 const TOOL_GENERATE = "generate_easel_image";
 const TOOL_EDIT = "edit_easel_image";
 const TOOL_EDIT_REGION = "edit_easel_region";
+const TOOL_REGENERATE = "regenerate_easel_image";
+const TOOL_GET_REQUESTS = "get_easel_requests";
+const TOOL_COMPLETE_REQUEST = "complete_easel_request";
 
 const JsonRpcError = { METHOD_NOT_FOUND: -32601, INVALID_PARAMS: -32602 };
 
@@ -297,30 +300,39 @@ async function editRegionImage(args = {}) {
   const prompt = nonEmptyString(args.prompt);
   if (!prompt) throw new Error("prompt is required.");
   const url = normalizeUrl(args);
-  const selection = await getSelection(url);
-  const shapes = selection?.selectedShapes ?? [];
-
-  let imageSel = null;
-  if (nonEmptyString(args.sourceShapeId)) {
-    imageSel = shapes.find((s) => s.id === args.sourceShapeId && s.type === "image") || null;
-  }
-  if (!imageSel) {
-    const imgs = shapes.filter((s) => s.type === "image");
-    if (imgs.length === 1) imageSel = imgs[0];
-  }
-  if (!imageSel) throw new Error("Select the image and a rectangle region together (or pass sourceShapeId).");
-  const src = imageSel.asset?.src;
-  if (!nonEmptyString(src)) throw new Error("Selected image has no local source to edit.");
-
-  let region = args.region && typeof args.region === "object" ? args.region : null;
-  if (!region) region = deriveRegionFromSelection(selection, imageSel);
-  if (!region || !(region.w > 0) || !(region.h > 0)) {
-    throw new Error("Draw a rectangle over the area to change and select it with the image, or pass region {x,y,w,h} in image pixels.");
-  }
-
   const snapshot = await loadSnapshot(url);
   const store = snapshot.store;
-  const pageId = imageSel.parentId || firstPageId(store);
+
+  let region = args.region && typeof args.region === "object" ? args.region : null;
+  let shape = nonEmptyString(args.sourceShapeId) && store[args.sourceShapeId]?.type === "image" ? store[args.sourceShapeId] : null;
+  let src = shape ? store[shape.props?.assetId]?.props?.src ?? null : null;
+  let deleteIds = Array.isArray(args.deleteShapeIds) ? args.deleteShapeIds.filter((id) => typeof id === "string") : [];
+
+  // Fall back to the live selection when the image or region was not given explicitly.
+  if (!shape || !region) {
+    const selection = await getSelection(url);
+    const shapes = selection?.selectedShapes ?? [];
+    let imageSel = nonEmptyString(args.sourceShapeId) ? shapes.find((s) => s.id === args.sourceShapeId && s.type === "image") : null;
+    if (!imageSel) {
+      const imgs = shapes.filter((s) => s.type === "image");
+      if (imgs.length === 1) imageSel = imgs[0];
+    }
+    if (!imageSel) throw new Error("Select the image and a rectangle together, or pass sourceShapeId + region.");
+    if (!shape) {
+      shape = store[imageSel.id];
+      src = imageSel.asset?.src;
+    }
+    if (!region) region = deriveRegionFromSelection(selection, imageSel);
+    if (deleteIds.length === 0) deleteIds = shapes.filter((s) => s.type === "geo").map((s) => s.id);
+  }
+
+  if (!shape) throw new Error("Image shape not found in canvas snapshot.");
+  if (!nonEmptyString(src)) throw new Error("Selected image has no local source to edit.");
+  if (!region || !(region.w > 0) || !(region.h > 0)) {
+    throw new Error("Provide a rectangle region (draw one + select with the image, or pass region {x,y,w,h} in image pixels).");
+  }
+
+  const pageId = shape.parentId || firstPageId(store);
   const srcField = src.startsWith("data:") ? { sourceDataUrl: src } : { sourceSrc: src };
 
   const gen = await fetchJson(`${url}/api/edit`, {
@@ -329,12 +341,46 @@ async function editRegionImage(args = {}) {
     body: JSON.stringify({ prompt, pageId, ...srcField, region, model: args.model, baseUrl: args.baseUrl }),
   });
 
-  replaceImageInPlaceStore(store, imageSel.id, gen, { prompt, kind: "region" });
-  for (const s of shapes) {
-    if (s.type === "geo" && store[s.id]) delete store[s.id];
+  replaceImageInPlaceStore(store, shape.id, gen, { prompt, kind: "region" });
+  for (const gid of deleteIds) {
+    if (store[gid]) delete store[gid];
   }
   await saveSnapshot(url, snapshot);
-  return { pageId, shapeId: imageSel.id, size: gen.size, width: gen.width, height: gen.height, assetUrl: gen.src };
+  return { pageId, shapeId: shape.id, size: gen.size, width: gen.width, height: gen.height, assetUrl: gen.src };
+}
+
+async function regenerateEaselImage(args = {}) {
+  const prompt = nonEmptyString(args.prompt);
+  if (!prompt) throw new Error("prompt is required.");
+  const url = normalizeUrl(args);
+  const snapshot = await loadSnapshot(url);
+  const store = snapshot.store;
+  const shape = nonEmptyString(args.sourceShapeId) ? store[args.sourceShapeId] : selectedSingleShape(await getSelection(url), store);
+  if (!shape || shape.type !== "image") throw new Error("sourceShapeId must reference an image shape (or select one image).");
+  const pageId = shape.parentId || firstPageId(store);
+  const gen = await fetchJson(`${url}/api/generate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt, pageId, ratio: args.ratio, size: args.size, model: args.model, baseUrl: args.baseUrl }),
+  });
+  replaceImageInPlaceStore(store, shape.id, gen, { prompt, kind: "regenerate" });
+  await saveSnapshot(url, snapshot);
+  return { pageId, shapeId: shape.id, size: gen.size, width: gen.width, height: gen.height, assetUrl: gen.src };
+}
+
+async function getEaselRequests(args = {}) {
+  const url = normalizeUrl(args);
+  const payload = await fetchJson(`${url}/api/requests`);
+  return Array.isArray(payload?.requests) ? payload.requests : [];
+}
+
+async function completeEaselRequest(args = {}) {
+  const url = normalizeUrl(args);
+  return fetchJson(`${url}/api/requests/complete`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id: args.id, all: args.all === true }),
+  });
 }
 
 function toolDefinitions() {
@@ -409,6 +455,7 @@ function toolDefinitions() {
             description: "Optional explicit region in source-image pixels. If omitted, derived from the selected rectangle(s).",
             properties: { x: { type: "number" }, y: { type: "number" }, w: { type: "number" }, h: { type: "number" } },
           },
+          deleteShapeIds: { type: "array", description: "Shape ids (e.g. the rectangle) to remove after the edit.", items: { type: "string" } },
           model: { type: "string", description: "Override image model." },
           baseUrl: { type: "string", description: "Override OpenAI-compatible base URL." },
         },
@@ -416,6 +463,54 @@ function toolDefinitions() {
         additionalProperties: false,
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    },
+    {
+      name: TOOL_REGENERATE,
+      title: "Regenerate Easel Image",
+      description:
+        "Generate a fresh image from a detailed prompt and replace the selected image in place (text-to-image, same slot). Pass sourceShapeId or select one image.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          prompt: { type: "string", description: "Full, detailed image prompt." },
+          easelUrl: { type: "string", description: "Running Easel URL, default http://127.0.0.1:43219." },
+          sourceShapeId: { type: "string", description: "Image shape id to replace. Optional when one image is selected." },
+          ratio: { type: "number", description: "Aspect ratio width/height. Defaults to the source's ratio." },
+          size: { type: "string", description: "Explicit WIDTHxHEIGHT override." },
+          model: { type: "string", description: "Override image model." },
+          baseUrl: { type: "string", description: "Override OpenAI-compatible base URL." },
+        },
+        required: ["prompt"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    },
+    {
+      name: TOOL_GET_REQUESTS,
+      title: "Get Easel Requests",
+      description:
+        "Read the pending request queue created by the canvas buttons (when the user runs them in 'send to Codex' mode). Each request has an action (generate/variants/batch/edit/region/regenerate), prompt, and (for edits) targetShapeId / region / regionShapeIds. Process each with the matching tool, then call complete_easel_request with its id.",
+      inputSchema: {
+        type: "object",
+        properties: { easelUrl: { type: "string", description: "Running Easel URL, default http://127.0.0.1:43219." } },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    {
+      name: TOOL_COMPLETE_REQUEST,
+      title: "Complete Easel Request",
+      description: "Remove a processed request from the queue by id (or pass all:true to clear the whole queue).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Request id to remove." },
+          all: { type: "boolean", description: "Clear the entire queue." },
+          easelUrl: { type: "string", description: "Running Easel URL, default http://127.0.0.1:43219." },
+        },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
   ];
 }
@@ -462,6 +557,30 @@ async function handleToolCall(id, params) {
     });
     return;
   }
+  if (name === TOOL_REGENERATE) {
+    const result = await regenerateEaselImage(args);
+    sendResult(id, {
+      content: [{ type: "text", text: `Regenerated ${result.shapeId} in place on ${result.pageId}.` }],
+      structuredContent: result,
+    });
+    return;
+  }
+  if (name === TOOL_GET_REQUESTS) {
+    const requests = await getEaselRequests(args);
+    const summary =
+      requests.length === 0
+        ? "No pending canvas requests."
+        : requests
+            .map((r) => `${r.id} [${r.action}]${nonEmptyString(r.prompt) ? ` “${r.prompt}”` : ""}${nonEmptyString(r.targetShapeId) ? ` -> ${r.targetShapeId}` : ""}`)
+            .join("\n");
+    sendResult(id, { content: [{ type: "text", text: summary }], structuredContent: { requests } });
+    return;
+  }
+  if (name === TOOL_COMPLETE_REQUEST) {
+    const result = await completeEaselRequest(args);
+    sendResult(id, { content: [{ type: "text", text: `Queue updated. Pending: ${result?.pending ?? "?"}.` }], structuredContent: result });
+    return;
+  }
   sendError(id, JsonRpcError.INVALID_PARAMS, `Unknown tool: ${name ?? ""}`);
 }
 
@@ -473,7 +592,7 @@ async function handleRequest(message) {
       capabilities: { tools: {} },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Drive the Easel canvas through conversation. get_easel_selection reads what is selected (including geometry); generate_easel_image creates an image card from a detailed prompt; edit_easel_image does whole-image image-to-image on the selected image; edit_easel_region regenerates only a rectangle the user drew (real regional edit) and composites it back in place. Read the canvas, infer the user's intent, write complete prompts, and iterate. Generation uses the running Easel local server's BYOK provider.",
+        "Drive the Easel canvas through conversation. get_easel_selection reads what is selected (including geometry and annotation text); generate_easel_image creates an image card; edit_easel_image does whole-image image-to-image; edit_easel_region regenerates only a drawn rectangle in place; regenerate_easel_image replaces a selected image in place. The canvas buttons can also enqueue work: get_easel_requests returns pending requests (each with action + prompt + targetShapeId/region), which you execute with the matching tool and then clear via complete_easel_request. Read the canvas, infer intent, write complete prompts, and iterate. Generation uses the running Easel local server's BYOK provider.",
     });
     return;
   }
