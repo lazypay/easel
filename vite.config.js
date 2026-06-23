@@ -11,6 +11,7 @@ import {
   parseExplicitSize,
   generateImageToBuffer,
   editImageToBuffer,
+  editRegionToBuffer,
   readImageDimensions,
   finiteNumber,
   nonEmptyString
@@ -717,6 +718,21 @@ function canvasStoragePlugin() {
             mimeType = parsed.mimeType
           } else {
             sendJson(res, 400, { error: 'sourceSrc or sourceDataUrl is required' })
+            return
+          }
+          // Regional edit: crop -> regenerate -> composite back (real inpaint).
+          const region = body.region && typeof body.region === 'object' ? body.region : null
+          if (region && finiteNumber(region.w, 0) > 0 && finiteNumber(region.h, 0) > 0) {
+            const baseUrl = resolveImageBaseUrl(body)
+            const model = resolveImageModel(body)
+            const { buffer, size } = await editRegionToBuffer({ apiKey, baseUrl, model, prompt, imageBuffer: sourceBuffer, region })
+            const outDims = readImageDimensions(buffer) || { width: 0, height: 0 }
+            const saved = await saveEaselAsset(pageId, buffer)
+            let provider = ''
+            try {
+              provider = new URL(baseUrl).host
+            } catch {}
+            sendJson(res, 200, { ok: true, ...saved, width: outDims.width, height: outDims.height, size, model, provider, region: true })
             return
           }
           let maskBuffer = null

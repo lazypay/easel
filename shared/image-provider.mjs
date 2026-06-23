@@ -241,6 +241,58 @@ export async function editImageToBuffer({ apiKey, baseUrl, model, prompt, imageB
   return bufferFromPayload(payload);
 }
 
+// Real regional edit (provider-agnostic). The hosted gpt-image proxies ignore
+// edit masks, so instead of masking we crop the region, regenerate just that
+// crop from the prompt, then composite it back with a feathered seam. Pixels
+// outside the region are kept byte-for-byte. region is in source pixel coords.
+export async function editRegionToBuffer({ apiKey, baseUrl, model, prompt, imageBuffer, region, budgetPixels }) {
+  const sharp = (await import("sharp")).default;
+  const meta = await sharp(imageBuffer).metadata();
+  const W = meta.width || 0;
+  const H = meta.height || 0;
+  if (!W || !H) throw new Error("Could not read source image dimensions.");
+
+  let x = Math.round(finiteNumber(region?.x, 0));
+  let y = Math.round(finiteNumber(region?.y, 0));
+  let w = Math.round(finiteNumber(region?.w, 0));
+  let h = Math.round(finiteNumber(region?.h, 0));
+  x = clampNumber(x, 0, Math.max(0, W - 1));
+  y = clampNumber(y, 0, Math.max(0, H - 1));
+  w = clampNumber(w, 1, W - x);
+  h = clampNumber(h, 1, H - y);
+  if (w < 8 || h < 8) throw new Error("Region is too small to edit.");
+
+  // Crop the region, upscale it to a provider-legal size, regenerate, scale back.
+  const cropBuf = await sharp(imageBuffer).extract({ left: x, top: y, width: w, height: h }).png().toBuffer();
+  const gen = computeGenerationSize(w / h, budgetPixels);
+  const genStr = `${gen.width}x${gen.height}`;
+  const cropResized = await sharp(cropBuf).resize(gen.width, gen.height, { fit: "fill" }).png().toBuffer();
+  const { buffer: patchRaw } = await editImageToBuffer({
+    apiKey, baseUrl, model, prompt, imageBuffer: cropResized, mimeType: "image/png", size: genStr,
+  });
+
+  // Feathered alpha (white center fading to transparent edges) for a soft seam.
+  const feather = clampNumber(Math.round(Math.min(w, h) * 0.05), 2, 64);
+  const innerW = Math.max(1, w - feather * 2);
+  const innerH = Math.max(1, h - feather * 2);
+  const whiteRect = await sharp({ create: { width: innerW, height: innerH, channels: 3, background: { r: 255, g: 255, b: 255 } } }).png().toBuffer();
+  const maskRgb = await sharp({ create: { width: w, height: h, channels: 3, background: { r: 0, g: 0, b: 0 } } })
+    .composite([{ input: whiteRect, left: feather, top: feather }])
+    .blur(feather)
+    .png()
+    .toBuffer();
+  const alpha = await sharp(maskRgb).extractChannel(0).raw().toBuffer();
+
+  const patchRgb = await sharp(patchRaw).resize(w, h, { fit: "fill" }).removeAlpha().raw().toBuffer();
+  const patchRgba = await sharp(patchRgb, { raw: { width: w, height: h, channels: 3 } })
+    .joinChannel(alpha, { raw: { width: w, height: h, channels: 1 } })
+    .png()
+    .toBuffer();
+
+  const outBuffer = await sharp(imageBuffer).composite([{ input: patchRgba, left: x, top: y }]).png().toBuffer();
+  return { buffer: outBuffer, width: W, height: H, size: genStr };
+}
+
 // Read width/height from PNG/JPEG/WebP bytes (no deps).
 export function readImageDimensions(buffer) {
   if (buffer.length >= 24 && buffer.toString("ascii", 1, 4) === "PNG") {

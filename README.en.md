@@ -45,9 +45,10 @@ Windows: `setx EASEL_IMAGE_API_KEY "YOUR_KEY"`. macOS/Linux: `export ... >> ~/.z
 
 ## MCP tools
 
-- `get_easel_selection`: read the current selection.
+- `get_easel_selection`: read the current selection (including geometry).
 - `generate_easel_image`: generate (by `ratio` or `size`) and insert as a card.
-- `edit_easel_image`: true image-to-image on the selected image, placed beside the original.
+- `edit_easel_image`: whole-image image-to-image on the selected image, placed beside the original.
+- `edit_easel_region`: regenerate only a drawn rectangle and composite it back in place (real regional edit; no provider mask needed).
 
 ## Skills
 

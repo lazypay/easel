@@ -15,6 +15,7 @@ const DISPLAY_LONG_SIDE = 360;
 const TOOL_GET_SELECTION = "get_easel_selection";
 const TOOL_GENERATE = "generate_easel_image";
 const TOOL_EDIT = "edit_easel_image";
+const TOOL_EDIT_REGION = "edit_easel_region";
 
 const JsonRpcError = { METHOD_NOT_FOUND: -32601, INVALID_PARAMS: -32602 };
 
@@ -229,6 +230,104 @@ async function editEaselImage(args = {}) {
   return { pageId, requestedSize: gen.size, generatedSize: { width: gen.width, height: gen.height }, assetUrl: gen.src, ...placed };
 }
 
+function replaceImageInPlaceStore(store, shapeId, gen, meta) {
+  const shape = store[shapeId];
+  if (!shape) throw new Error("Image shape not found in canvas snapshot.");
+  const seed = randomSeed();
+  const assetId = `asset:easel-${seed}`;
+  store[assetId] = {
+    id: assetId,
+    typeName: "asset",
+    type: "image",
+    props: {
+      name: gen.fileName || "easel-image",
+      src: gen.src,
+      w: gen.width,
+      h: gen.height,
+      fileSize: gen.fileSize || 0,
+      mimeType: "image/png",
+      isAnimated: false,
+    },
+    meta: {},
+  };
+  store[shapeId] = {
+    ...shape,
+    props: { ...shape.props, assetId },
+    meta: { ...shape.meta, ...meta, version: (Number(shape.meta?.version) || 1) + 1, replacedAt: Date.now() },
+  };
+  return { assetId, shapeId };
+}
+
+// Turn selected rectangle shape(s) into a region in the image's pixel space.
+function deriveRegionFromSelection(selection, imageSel) {
+  const geos = (selection?.selectedShapes ?? []).filter((s) => s.type === "geo" && s.props);
+  if (geos.length === 0) return null;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const g of geos) {
+    const gx = Number(g.x), gy = Number(g.y), gw = Number(g.props.w), gh = Number(g.props.h);
+    if (![gx, gy, gw, gh].every(Number.isFinite)) continue;
+    minX = Math.min(minX, gx);
+    minY = Math.min(minY, gy);
+    maxX = Math.max(maxX, gx + gw);
+    maxY = Math.max(maxY, gy + gh);
+  }
+  if (!Number.isFinite(minX)) return null;
+  const ix = Number(imageSel.x), iy = Number(imageSel.y);
+  const iw = Number(imageSel.props?.w), ih = Number(imageSel.props?.h);
+  const aw = Number(imageSel.asset?.w), ah = Number(imageSel.asset?.h);
+  if (![ix, iy, iw, ih, aw, ah].every(Number.isFinite) || iw <= 0 || ih <= 0) return null;
+  return {
+    x: ((minX - ix) / iw) * aw,
+    y: ((minY - iy) / ih) * ah,
+    w: ((maxX - minX) / iw) * aw,
+    h: ((maxY - minY) / ih) * ah,
+  };
+}
+
+async function editRegionImage(args = {}) {
+  const prompt = nonEmptyString(args.prompt);
+  if (!prompt) throw new Error("prompt is required.");
+  const url = normalizeUrl(args);
+  const selection = await getSelection(url);
+  const shapes = selection?.selectedShapes ?? [];
+
+  let imageSel = null;
+  if (nonEmptyString(args.sourceShapeId)) {
+    imageSel = shapes.find((s) => s.id === args.sourceShapeId && s.type === "image") || null;
+  }
+  if (!imageSel) {
+    const imgs = shapes.filter((s) => s.type === "image");
+    if (imgs.length === 1) imageSel = imgs[0];
+  }
+  if (!imageSel) throw new Error("Select the image and a rectangle region together (or pass sourceShapeId).");
+  const src = imageSel.asset?.src;
+  if (!nonEmptyString(src)) throw new Error("Selected image has no local source to edit.");
+
+  let region = args.region && typeof args.region === "object" ? args.region : null;
+  if (!region) region = deriveRegionFromSelection(selection, imageSel);
+  if (!region || !(region.w > 0) || !(region.h > 0)) {
+    throw new Error("Draw a rectangle over the area to change and select it with the image, or pass region {x,y,w,h} in image pixels.");
+  }
+
+  const snapshot = await loadSnapshot(url);
+  const store = snapshot.store;
+  const pageId = imageSel.parentId || firstPageId(store);
+  const srcField = src.startsWith("data:") ? { sourceDataUrl: src } : { sourceSrc: src };
+
+  const gen = await fetchJson(`${url}/api/edit`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt, pageId, ...srcField, region, model: args.model, baseUrl: args.baseUrl }),
+  });
+
+  replaceImageInPlaceStore(store, imageSel.id, gen, { prompt, kind: "region" });
+  for (const s of shapes) {
+    if (s.type === "geo" && store[s.id]) delete store[s.id];
+  }
+  await saveSnapshot(url, snapshot);
+  return { pageId, shapeId: imageSel.id, size: gen.size, width: gen.width, height: gen.height, assetUrl: gen.src };
+}
+
 function toolDefinitions() {
   return [
     {
@@ -285,6 +384,30 @@ function toolDefinitions() {
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
+    {
+      name: TOOL_EDIT_REGION,
+      title: "Edit Easel Region",
+      description:
+        "Regenerate ONLY a rectangular region of a selected image and composite it back in place (real regional edit; works even though the provider ignores edit masks). Ask the user to draw a rectangle over the area to change and select it together with the image, or pass an explicit region {x,y,w,h} in image pixel coordinates. Pass a complete, detailed prompt describing what that region should become, consistent with the rest of the image.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          prompt: { type: "string", description: "Detailed description of what the region should become." },
+          easelUrl: { type: "string", description: "Running Easel URL, default http://127.0.0.1:43219." },
+          sourceShapeId: { type: "string", description: "Image shape id. Optional when one image is selected." },
+          region: {
+            type: "object",
+            description: "Optional explicit region in source-image pixels. If omitted, derived from the selected rectangle(s).",
+            properties: { x: { type: "number" }, y: { type: "number" }, w: { type: "number" }, h: { type: "number" } },
+          },
+          model: { type: "string", description: "Override image model." },
+          baseUrl: { type: "string", description: "Override OpenAI-compatible base URL." },
+        },
+        required: ["prompt"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    },
   ];
 }
 
@@ -317,6 +440,14 @@ async function handleToolCall(id, params) {
     });
     return;
   }
+  if (name === TOOL_EDIT_REGION) {
+    const result = await editRegionImage(args);
+    sendResult(id, {
+      content: [{ type: "text", text: `Regenerated the region of ${result.shapeId} in place on ${result.pageId}.` }],
+      structuredContent: result,
+    });
+    return;
+  }
   sendError(id, JsonRpcError.INVALID_PARAMS, `Unknown tool: ${name ?? ""}`);
 }
 
@@ -328,7 +459,7 @@ async function handleRequest(message) {
       capabilities: { tools: {} },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Drive the Easel canvas: get_easel_selection reads selection; generate_easel_image creates an image and inserts it as a card; edit_easel_image does true image-to-image on the selected image. Generation uses the running Easel local server's BYOK provider.",
+        "Drive the Easel canvas through conversation. get_easel_selection reads what is selected (including geometry); generate_easel_image creates an image card from a detailed prompt; edit_easel_image does whole-image image-to-image on the selected image; edit_easel_region regenerates only a rectangle the user drew (real regional edit) and composites it back in place. Read the canvas, infer the user's intent, write complete prompts, and iterate. Generation uses the running Easel local server's BYOK provider.",
     });
     return;
   }

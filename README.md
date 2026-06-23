@@ -10,6 +10,7 @@ English: [README.en.md](README.en.md)
 
 - 画布右上角 **Inspector 面板**：输入提示词、选比例、点"生成"或"4 变体"，结果作为干净图卡落到画布（可自由移动/缩放，不裁切）。
 - **图生图编辑**：选中一张图，输入修改描述，走 `/images/edits` 真·图生图，结果放在原图旁、最大限度保留原图。
+- **局部区域重绘**：在图上画矩形框住要改的地方，只重画框内、其余像素原样保留（裁→重画→回贴，不依赖被忽略的 provider mask）。
 - **BYOK 多 provider**：自带 OpenAI 兼容接口的 key 即用，不依赖订阅额度。
 - **生图能力下沉到本地服务**：画布按钮直接出图，不必走聊天；Codex agent 通过 MCP 工具作为第二入口。
 - 画布与图片资源**本地持久化**，实时热刷新。
@@ -55,16 +56,19 @@ macOS / Linux 用 `export ... >> ~/.zshrc` 后 `source`。设置后重新加载 
 
 ## 使用
 
-1. 在 Codex 中说 “Open the Easel canvas for this project.”，默认地址 `http://127.0.0.1:43219/`。
-2. 右上角 Inspector 面板：写提示词 → 选比例 → 点 **生成** / **4 变体**。
-3. 想改某张图：在画布选中它 → 在"图生图"框写修改要求 → 点 **按描述编辑选中图**。
-4. 也可以让 Codex agent 用 MCP 工具驱动（见下）。
+推荐在 Codex 里**对话驱动**——这才用得上大模型的理解、补全与迭代：
+
+1. 让 Codex “Open the Easel canvas for this project.”（默认 `http://127.0.0.1:43219/`）。
+2. 直接说想要什么。给一句话也行，Codex 会结合画布上下文把提示词补全后再生成。
+3. 想改局部：用矩形工具在图上**画个框**，连同图片一起选中，跟 Codex 说“把框里改成…”，它只重画框内（`edit_easel_region`），其余不动。
+4. 也可以用右上角 Inspector 面板手动操作：写提示词→选比例→生成/4 变体；选中图迭代；画矩形+选中做局部重绘。
 
 ## MCP 工具
 
-- `get_easel_selection`：读取当前选中。
+- `get_easel_selection`：读取当前选中（含几何信息，供算区域）。
 - `generate_easel_image`：按 `ratio`/`size` 生成并作为图卡插入画布（`placeBesideSelection` 放在选中项旁）。
-- `edit_easel_image`：对选中图做真·图生图，结果放在原图旁。
+- `edit_easel_image`：对选中图做整图图生图，结果放在原图旁。
+- `edit_easel_region`：只重画矩形框内区域并**原地替换**（真·区域重绘，不依赖 provider mask）。
 
 ## 技能
 

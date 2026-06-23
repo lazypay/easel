@@ -25,29 +25,6 @@ function sourceField(src) {
   return { sourceSrc: src }
 }
 
-const align16 = (n) => Math.max(16, Math.round(n / 16) * 16)
-
-// Re-render an image src to exact target dimensions, returning a PNG data URL.
-function rasterizeToSize(src, tw, th) {
-  return new Promise((resolve) => {
-    const im = new Image()
-    im.onload = () => {
-      const canvas = document.createElement('canvas')
-      canvas.width = tw
-      canvas.height = th
-      const ctx = canvas.getContext('2d')
-      if (!ctx) {
-        resolve(null)
-        return
-      }
-      ctx.drawImage(im, 0, 0, tw, th)
-      resolve(canvas.toDataURL('image/png'))
-    }
-    im.onerror = () => resolve(null)
-    im.src = src
-  })
-}
-
 function createImageAsset(editor, result) {
   const assetId = AssetRecordType.createId()
   editor.createAssets([
@@ -154,34 +131,27 @@ function downloadAsset(editor, shape) {
   return true
 }
 
-// Build an inpaint mask at the image's native resolution: opaque everywhere,
-// transparent inside the region rectangles (transparent = the area to regenerate).
-function buildMaskDataUrl(editor, image, regions, maskW, maskH) {
+// Map the selected rectangle(s) onto the image to get a region in source pixels.
+function regionFromRects(editor, image, rects, aw, ah) {
   const ib = editor.getShapePageBounds(image.id)
-  if (!maskW || !maskH || !ib || ib.w <= 0 || ib.h <= 0) return null
-  const canvas = document.createElement('canvas')
-  canvas.width = maskW
-  canvas.height = maskH
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return null
-  ctx.fillStyle = 'rgba(0,0,0,1)'
-  ctx.fillRect(0, 0, maskW, maskH)
-  ctx.globalCompositeOperation = 'destination-out'
-  let any = false
-  for (const region of regions) {
-    const rb = editor.getShapePageBounds(region.id)
+  if (!ib || ib.w <= 0 || ib.h <= 0 || !aw || !ah) return null
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const r of rects) {
+    const rb = editor.getShapePageBounds(r.id)
     if (!rb) continue
-    const x0 = Math.max(0, Math.min(1, (rb.minX - ib.minX) / ib.w)) * maskW
-    const y0 = Math.max(0, Math.min(1, (rb.minY - ib.minY) / ib.h)) * maskH
-    const x1 = Math.max(0, Math.min(1, (rb.maxX - ib.minX) / ib.w)) * maskW
-    const y1 = Math.max(0, Math.min(1, (rb.maxY - ib.minY) / ib.h)) * maskH
-    if (x1 > x0 && y1 > y0) {
-      ctx.fillRect(x0, y0, x1 - x0, y1 - y0)
-      any = true
-    }
+    minX = Math.min(minX, rb.minX)
+    minY = Math.min(minY, rb.minY)
+    maxX = Math.max(maxX, rb.maxX)
+    maxY = Math.max(maxY, rb.maxY)
   }
-  ctx.globalCompositeOperation = 'source-over'
-  return any ? canvas.toDataURL('image/png') : null
+  if (!Number.isFinite(minX)) return null
+  const region = {
+    x: ((minX - ib.minX) / ib.w) * aw,
+    y: ((minY - ib.minY) / ib.h) * ah,
+    w: ((maxX - minX) / ib.w) * aw,
+    h: ((maxY - minY) / ib.h) * ah
+  }
+  return region.w > 0 && region.h > 0 ? region : null
 }
 
 const PRESETS = [
@@ -250,12 +220,13 @@ export function EaselInspector() {
     return shape && shape.type === 'image' ? shape : null
   })()
 
-  // Inpaint: an image plus one or more region shapes selected together.
+  // Regional edit: an image plus one or more rectangles selected together.
+  // Only rectangles (geo) count as regions; text/arrows are ignored.
   const inpaintShapes = (() => {
     if (selectedIds.length < 2) return null
     const shapes = selectedIds.map((id) => editor.getShape(id)).filter(Boolean)
     const image = shapes.find((s) => s.type === 'image')
-    const regions = image ? shapes.filter((s) => s.id !== image.id && s.type !== 'image') : []
+    const regions = image ? shapes.filter((s) => s.type === 'geo') : []
     return image && regions.length > 0 ? { image, regions } : null
   })()
 
@@ -409,30 +380,15 @@ export function EaselInspector() {
       setStatus('选中图缺少可用的源或尺寸')
       return
     }
+    const region = regionFromRects(editor, image, regions, aw, ah)
+    if (!region) {
+      setStatus('矩形需与图片重叠')
+      return
+    }
     run('局部重绘中…（约 30~50s）', async () => {
-      // The provider needs sides multiple of 16; align external images (and their mask).
-      const needAlign = aw % 16 !== 0 || ah % 16 !== 0
-      const maskW = needAlign ? align16(aw) : aw
-      const maskH = needAlign ? align16(ah) : ah
-      const maskDataUrl = buildMaskDataUrl(editor, image, regions, maskW, maskH)
-      if (!maskDataUrl) {
-        setStatus('无法生成蒙版（矩形需与图片重叠）')
-        return
-      }
-      let sourcePayload
-      if (needAlign) {
-        const aligned = await rasterizeToSize(src, maskW, maskH)
-        if (!aligned) {
-          setStatus('源图对齐处理失败')
-          return
-        }
-        sourcePayload = { sourceDataUrl: aligned }
-      } else {
-        sourcePayload = sourceField(src)
-      }
-      const data = await callApi('/api/edit', { prompt: text, pageId: pageId(), ...sourcePayload, maskDataUrl })
+      const data = await callApi('/api/edit', { prompt: text, pageId: pageId(), ...sourceField(src), region })
       editor.deleteShapes(regions.map((r) => r.id))
-      replaceImageInPlace(editor, image, data, { prompt: text, kind: 'inpaint' })
+      replaceImageInPlace(editor, image, data, { prompt: text, kind: 'region' })
       setInpaintPrompt('')
       setStatus('已局部重绘并替换')
     })
