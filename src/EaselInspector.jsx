@@ -18,6 +18,13 @@ function displaySize(width, height) {
   return { w: Math.round((DISPLAY_LONG_SIDE * width) / height), h: DISPLAY_LONG_SIDE }
 }
 
+// External images dragged/pasted in start as data: URLs (not yet localized to
+// disk); send those as sourceDataUrl so they can be edited immediately.
+function sourceField(src) {
+  if (typeof src === 'string' && src.startsWith('data:')) return { sourceDataUrl: src }
+  return { sourceSrc: src }
+}
+
 function createImageAsset(editor, result) {
   const assetId = AssetRecordType.createId()
   editor.createAssets([
@@ -347,7 +354,7 @@ export function EaselInspector() {
       return
     }
     run('图生图编辑中…（约 30~50s）', async () => {
-      const data = await callApi('/api/edit', { prompt: text, pageId: pageId(), sourceSrc: src })
+      const data = await callApi('/api/edit', { prompt: text, pageId: pageId(), ...sourceField(src) })
       const b = editor.getShapePageBounds(selectedImage.id)
       const size = displaySize(data.width, data.height)
       const cx = b ? b.maxX + 40 + size.w / 2 : center().x
@@ -386,7 +393,7 @@ export function EaselInspector() {
       return
     }
     run('局部重绘中…（约 30~50s）', async () => {
-      const data = await callApi('/api/edit', { prompt: text, pageId: pageId(), sourceSrc: src, maskDataUrl })
+      const data = await callApi('/api/edit', { prompt: text, pageId: pageId(), ...sourceField(src), maskDataUrl })
       editor.deleteShapes(regions.map((r) => r.id))
       replaceImageInPlace(editor, image, data, { prompt: text, kind: 'inpaint' })
       setInpaintPrompt('')
