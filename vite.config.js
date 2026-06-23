@@ -660,16 +660,16 @@ function canvasStoragePlugin() {
           const sizeObj =
             parseExplicitSize(body.size) || computeGenerationSize(finiteNumber(body.ratio, 1), finiteNumber(body.targetPx, undefined))
           const size = `${sizeObj.width}x${sizeObj.height}`
-          const { buffer } = await generateImageToBuffer({
-            apiKey,
-            baseUrl: resolveImageBaseUrl(body),
-            model: resolveImageModel(body),
-            prompt,
-            size
-          })
+          const baseUrl = resolveImageBaseUrl(body)
+          const model = resolveImageModel(body)
+          const { buffer } = await generateImageToBuffer({ apiKey, baseUrl, model, prompt, size })
           const dims = readImageDimensions(buffer) || sizeObj
           const saved = await saveEaselAsset(pageId, buffer)
-          sendJson(res, 200, { ok: true, ...saved, width: dims.width, height: dims.height, size })
+          let provider = ''
+          try {
+            provider = new URL(baseUrl).host
+          } catch {}
+          sendJson(res, 200, { ok: true, ...saved, width: dims.width, height: dims.height, size, model, provider })
         } catch (error) {
           sendJson(res, 500, { error: error.message })
         }
@@ -741,10 +741,12 @@ function canvasStoragePlugin() {
             }
             size = `${sizeObj.width}x${sizeObj.height}`
           }
+          const baseUrl = resolveImageBaseUrl(body)
+          const model = resolveImageModel(body)
           const { buffer } = await editImageToBuffer({
             apiKey,
-            baseUrl: resolveImageBaseUrl(body),
-            model: resolveImageModel(body),
+            baseUrl,
+            model,
             prompt,
             imageBuffer: sourceBuffer,
             mimeType,
@@ -752,9 +754,13 @@ function canvasStoragePlugin() {
             maskBuffer,
             maskMimeType
           })
-          const outDims = readImageDimensions(buffer) || sizeObj
+          const outDims = readImageDimensions(buffer) || parseExplicitSize(size) || { width: 0, height: 0 }
           const saved = await saveEaselAsset(pageId, buffer)
-          sendJson(res, 200, { ok: true, ...saved, width: outDims.width, height: outDims.height, size })
+          let provider = ''
+          try {
+            provider = new URL(baseUrl).host
+          } catch {}
+          sendJson(res, 200, { ok: true, ...saved, width: outDims.width, height: outDims.height, size, model, provider })
         } catch (error) {
           sendJson(res, 500, { error: error.message })
         }

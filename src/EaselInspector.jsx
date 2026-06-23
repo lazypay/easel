@@ -50,7 +50,15 @@ function insertImageCard(editor, result, centerX, centerY, meta) {
     x: centerX - w / 2,
     y: centerY - h / 2,
     props: { w, h, assetId },
-    meta: { easelImage: true, createdAt: Date.now(), ...meta }
+    meta: {
+      easelImage: true,
+      createdAt: Date.now(),
+      version: 1,
+      model: result.model ?? null,
+      size: result.size ?? null,
+      provider: result.provider ?? null,
+      ...meta
+    }
   })
   editor.select(id)
   return id
@@ -63,7 +71,15 @@ function replaceImageInPlace(editor, shape, result, meta) {
     id: shape.id,
     type: 'image',
     props: { ...shape.props, assetId, w, h },
-    meta: { ...shape.meta, ...meta, replacedAt: Date.now() }
+    meta: {
+      ...shape.meta,
+      ...meta,
+      model: result.model ?? shape.meta?.model ?? null,
+      size: result.size ?? shape.meta?.size ?? null,
+      provider: result.provider ?? shape.meta?.provider ?? null,
+      version: (Number(shape.meta?.version) || 1) + 1,
+      replacedAt: Date.now()
+    }
   })
   editor.select(shape.id)
 }
