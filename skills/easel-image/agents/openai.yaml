@@ -1,0 +1,7 @@
+interface:
+  display_name: "Easel Image"
+  short_description: "Generate or edit images on the Easel canvas"
+  default_prompt: "Generate an image on the Easel canvas: a product poster for ..."
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Easel Open Canvas"
+  short_description: "Open the Easel infinite-canvas image studio"
+  default_prompt: "Open the Easel canvas for this project."
+
+policy:
+  allow_implicit_invocation: true

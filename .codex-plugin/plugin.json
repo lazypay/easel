@@ -1,0 +1,39 @@
+{
+  "name": "easel",
+  "version": "0.1.0",
+  "description": "Easel - a local infinite-canvas AI image studio for Codex, powered by tldraw. Generate, edit (image-to-image), iterate and compare images right on the canvas with your own image API.",
+  "author": {
+    "name": "lazypay"
+  },
+  "keywords": [
+    "canvas",
+    "tldraw",
+    "ai",
+    "image-generation",
+    "image-editing",
+    "studio"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Easel",
+    "shortDescription": "An infinite-canvas AI image studio inside Codex.",
+    "longDescription": "Easel turns a tldraw-powered infinite canvas into an AI image creation workstation. Generate images directly on the canvas, run true image-to-image edits, spin up variants, compare and iterate - all driven by your own image API (BYOK, multi-provider). The Codex agent can also read and drive the canvas. Canvas data stays in the active project workspace.",
+    "developerName": "lazypay",
+    "category": "Productivity",
+    "brandColor": "#6C5CE7",
+    "capabilities": [
+      "Infinite canvas",
+      "In-canvas image generation",
+      "Image-to-image editing",
+      "Variants and compare",
+      "BYOK multi-provider",
+      "Project-local persistence"
+    ],
+    "defaultPrompt": [
+      "Open the Easel canvas for this project.",
+      "Generate an image on the Easel canvas: a product poster for ...",
+      "Edit the selected Easel image: change ... and keep the rest."
+    ]
+  }
+}
